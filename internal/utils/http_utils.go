@@ -28,11 +28,9 @@ func cachedDial(addr string, dialTimeout time.Duration) (net.Conn, error) {
 	if err != nil {
 		return fasthttp.DialTimeout(addr, dialTimeout)
 	}
-	// Skip cache for IPs
 	if net.ParseIP(host) != nil {
 		return fasthttp.DialTimeout(addr, dialTimeout)
 	}
-	// Check cache
 	if val, ok := dnsCache.Load(host); ok {
 		entry := val.(*dnsCacheEntry)
 		if time.Since(entry.ts) < dnsCacheTTL && len(entry.addrs) > 0 {
@@ -40,7 +38,6 @@ func cachedDial(addr string, dialTimeout time.Duration) (net.Conn, error) {
 		}
 		dnsCache.Delete(host)
 	}
-	// Resolve and cache
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
@@ -49,6 +46,22 @@ func cachedDial(addr string, dialTimeout time.Duration) (net.Conn, error) {
 	}
 	dnsCache.Store(host, &dnsCacheEntry{addrs: addrs, ts: time.Now()})
 	return fasthttp.DialTimeout(net.JoinHostPort(addrs[0], port), dialTimeout)
+}
+
+func cachedDialTLS(addr string, dialTimeout time.Duration, tlsCfg *tls.Config) (net.Conn, error) {
+	plainConn, err := cachedDial(addr, dialTimeout)
+	if err != nil {
+		return nil, err
+	}
+	host, _, _ := net.SplitHostPort(addr)
+	cfg := tlsCfg.Clone()
+	cfg.ServerName = host
+	tlsConn := tls.Client(plainConn, cfg)
+	if err := tlsConn.Handshake(); err != nil {
+		plainConn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
 }
 
 // ---- HTTP Response ----
@@ -65,23 +78,22 @@ const maxBodySize = 5 * 1024 * 1024 // 5MB
 
 func NewFastHTTPClient(connectTimeout, readTimeout, totalTimeout time.Duration,
 	maxConnsPerHost, totalLimit int) *fasthttp.Client {
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true,
+	}
 	return &fasthttp.Client{
-		// InsecureSkipVerify: scanning tool connecting to arbitrary hosts with self-signed/expired certs.
-		TLSConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+		TLSConfig: tlsCfg,
 		Dial: func(addr string) (net.Conn, error) {
 			return cachedDial(addr, connectTimeout)
 		},
-		MaxConnsPerHost:               maxConnsPerHost,
-		MaxIdleConnDuration:           90 * time.Second,
-		ReadTimeout:                   readTimeout,
-		WriteTimeout:                  connectTimeout,
-		MaxResponseBodySize:           maxBodySize,
-		NoDefaultUserAgentHeader:      true,
-		DisableHeaderNamesNormalizing: true,
-		ReadBufferSize:                8192,
-		WriteBufferSize:               4096,
+		DialDualStack:       true,
+		MaxConnsPerHost:     maxConnsPerHost,
+		MaxIdleConnDuration: 90 * time.Second,
+		ReadTimeout:         readTimeout,
+		WriteTimeout:        connectTimeout,
+		MaxResponseBodySize: maxBodySize,
+		ReadBufferSize:      8192,
+		WriteBufferSize:     4096,
 	}
 }
 
@@ -96,11 +108,13 @@ func Fetch(client *fasthttp.Client, url, method string, headers map[string]strin
 
 		req.SetRequestURI(url)
 		req.Header.SetMethod(method)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
 
-		err := client.Do(req, resp)
+		// DoRedirects follows up to 3 redirects automatically
+		err := client.DoRedirects(req, resp, 3)
 		if err != nil {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
@@ -110,31 +124,18 @@ func Fetch(client *fasthttp.Client, url, method string, headers map[string]strin
 			continue
 		}
 
-		// Collect headers
+		// Collect headers (lowercase keys for consistent lookup)
 		hdrs := make(map[string]string)
 		resp.Header.VisitAll(func(key, value []byte) {
-			hdrs[string(key)] = string(value)
+			hdrs[strings.ToLower(string(key))] = string(value)
 		})
 
 		body := string(resp.Body())
 		size := len(resp.Body())
-		finalURL := url
-		// Follow redirects: check Location header
-		if loc := resp.Header.Peek("Location"); len(loc) > 0 {
-			finalURL = string(loc)
-		}
 		statusCode := resp.StatusCode()
 
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
-
-		// Handle redirects (up to 3)
-		if statusCode >= 300 && statusCode < 400 && finalURL != url {
-			redirectResp := Fetch(client, finalURL, method, headers, 0, 0)
-			if redirectResp != nil {
-				return redirectResp
-			}
-		}
 
 		return &HTTPResponse{
 			URL:     url,
@@ -155,16 +156,16 @@ func FetchRaw(ctx context.Context, client *fasthttp.Client, url string, headers 
 
 	req.SetRequestURI(url)
 	req.Header.SetMethod("GET")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	err := client.Do(req, resp)
+	err := client.DoRedirects(req, resp, 3)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Copy body since we release resp
 	body := make([]byte, len(resp.Body()))
 	copy(body, resp.Body())
 	return body, resp.StatusCode(), nil

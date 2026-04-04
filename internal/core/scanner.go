@@ -177,9 +177,9 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		scheme = "http"
 	}
 
-	// Pre-probe: quick check if target is alive
+	// Pre-probe: quick check if target is alive (use GET since some servers reject HEAD)
 	probeURL := fmt.Sprintf("%s://%s:%d/", scheme, target.Host, target.Port)
-	probe := utils.Fetch(se.client, probeURL, "HEAD", nil, 0, 0)
+	probe := utils.Fetch(se.client, probeURL, "GET", nil, 0, 0)
 	if probe == nil {
 		return
 	}
