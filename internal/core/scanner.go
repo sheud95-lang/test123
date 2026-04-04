@@ -139,8 +139,9 @@ func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) !=
 // Scanners that need the full wordlist (every path).
 var fullPathScanners = map[string]bool{"path": true, "r2s": true}
 
-// Entry-point paths for scanners that do their own internal path discovery.
-var entryPaths = []string{"/", "/index.html", "/index.php", "/home", "/app"}
+// Single entry-point for scanners that do their own internal path discovery.
+// These scanners (js, ajs, git, nvca, uafr) only need one call per target.
+var entryPaths = []string{"/"}
 
 func pathsForScanner(name string, allPaths []string) []string {
 	if fullPathScanners[name] {
@@ -177,11 +178,15 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		scheme = "http"
 	}
 
-	// Pre-probe: quick check if target is alive (use GET since some servers reject HEAD)
+	// Pre-probe: quick check if target is alive
 	probeURL := fmt.Sprintf("%s://%s:%d/", scheme, target.Host, target.Port)
-	probe := utils.Fetch(se.client, probeURL, "GET", nil, 0, 0)
+	probe := utils.Fetch(se.client, probeURL, "HEAD", nil, 0, 0)
 	if probe == nil {
-		return
+		// Some servers reject HEAD, try GET
+		probe = utils.Fetch(se.client, probeURL, "GET", nil, 0, 0)
+		if probe == nil {
+			return
+		}
 	}
 
 	for sName, scanner := range se.scanners {

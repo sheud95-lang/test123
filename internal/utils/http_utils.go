@@ -86,7 +86,6 @@ func NewFastHTTPClient(connectTimeout, readTimeout, totalTimeout time.Duration,
 		Dial: func(addr string) (net.Conn, error) {
 			return cachedDial(addr, connectTimeout)
 		},
-		DialDualStack:       true,
 		MaxConnsPerHost:     maxConnsPerHost,
 		MaxIdleConnDuration: 90 * time.Second,
 		ReadTimeout:         readTimeout,
