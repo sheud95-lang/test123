@@ -94,7 +94,7 @@ func init() {
 		{"SQUARE_OAUTH_SECRET", `\bsq0csp-[A-Za-z0-9_-]{43}\b`, "square", 0},
 
 		// Twilio
-		{"TWILIO_ACCOUNT_SID", `\bAC[0-9a-f]{32}\b`, "twilio", 0},
+		{"TWILIO_ACCOUNT_SID", `(?i)(?:twilio|account.?sid|ACCOUNT_SID)\s*[=:]\s*['"]?(AC[0-9a-f]{32})['"]?`, "twilio", 1},
 		{"TWILIO_AUTH_TOKEN", `(?i)(?:TWILIO_AUTH_TOKEN|TWILIO_TOKEN)\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`, "twilio", 1},
 
 		// SendGrid
@@ -284,6 +284,8 @@ func isFalsePositive(value string) bool {
 	return false
 }
 
+var pemEndRe = regexp.MustCompile(`-----END [A-Z ]*PRIVATE KEY-----`)
+
 func ExtractSecrets(text, sourceURL string) []Secret {
 	var results []Secret
 	seen := make(map[string]bool)
@@ -305,6 +307,23 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 				}
 				if value == "" || isFalsePositive(value) {
 					continue
+				}
+
+				// For PRIVATE_KEY: capture full PEM block across multiple lines
+				if sp.Name == "PRIVATE_KEY" {
+					var pemLines []string
+					pemLines = append(pemLines, strings.TrimSpace(line))
+					for j := lineNo + 1; j < len(lines) && j < lineNo+80; j++ {
+						trimmed := strings.TrimSpace(lines[j])
+						if trimmed == "" {
+							continue
+						}
+						pemLines = append(pemLines, trimmed)
+						if pemEndRe.MatchString(trimmed) {
+							break
+						}
+					}
+					value = strings.Join(pemLines, "\n")
 				}
 
 				dedupKey := sp.Name + ":" + value

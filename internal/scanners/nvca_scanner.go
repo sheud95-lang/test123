@@ -1,6 +1,7 @@
 package scanners
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -42,7 +43,25 @@ func (s *NVCAScanner) Scan(client *http.Client, host string, port int, path stri
 			if len(m) > 1 && !strings.HasPrefix(m[1], "data:") {
 				mu := m[1]; if !strings.HasPrefix(mu, "http") { mu = base + "/" + strings.TrimLeft(mu, "/") }
 				mr := utils.Fetch(client, mu, "GET", h, 2, 500_000_000)
-				if mr != nil && mr.Status == 200 { allS = append(allS, extractors.ExtractSecrets(mr.Body, mu)...); td := extractors.ExtractAllTargets(mr.Body, mu); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) }
+				if mr != nil && mr.Status == 200 {
+					// Parse sourcesContent from source map JSON for embedded source code
+					var srcMap struct {
+						SourcesContent []string `json:"sourcesContent"`
+					}
+					if json.Unmarshal([]byte(mr.Body), &srcMap) == nil && len(srcMap.SourcesContent) > 0 {
+						for _, src := range srcMap.SourcesContent {
+							if len(src) > 10 {
+								allS = append(allS, extractors.ExtractSecrets(src, mu)...)
+								td := extractors.ExtractAllTargets(src, mu)
+								allT = append(allT, td.IPs...); allT = append(allT, td.Domains...)
+							}
+						}
+					} else {
+						allS = append(allS, extractors.ExtractSecrets(mr.Body, mu)...)
+						td := extractors.ExtractAllTargets(mr.Body, mu)
+						allT = append(allT, td.IPs...); allT = append(allT, td.Domains...)
+					}
+				}
 			}
 		}
 		if stackRe.MatchString(body) { allS = append(allS, extractors.ExtractSecrets(body, resp.URL)...); td := extractors.ExtractAllTargets(body, resp.URL); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) }
