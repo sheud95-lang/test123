@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,18 +46,39 @@ func (e *smtpEntry) String() string {
 	return strings.Join(parts, " | ")
 }
 
+type bufferedFile struct {
+	f *os.File
+	w *bufio.Writer
+}
+
+func newBufferedFile(f *os.File) *bufferedFile {
+	if f == nil {
+		return nil
+	}
+	return &bufferedFile{f: f, w: bufio.NewWriterSize(f, 64*1024)}
+}
+
+func (bf *bufferedFile) Write(p []byte) { bf.w.Write(p) }
+func (bf *bufferedFile) WriteString(s string) { bf.w.WriteString(s) }
+func (bf *bufferedFile) Flush() { bf.w.Flush() }
+func (bf *bufferedFile) Close() {
+	bf.w.Flush()
+	bf.f.Close()
+}
+
 type TreasureWriter struct {
 	mu             sync.Mutex
 	treasureDir    string
-	hitsFile       *os.File
-	allFile        *os.File
-	allValidFile   *os.File
-	serviceFiles   map[string]*os.File
+	hitsFile       *bufferedFile
+	allFile        *bufferedFile
+	allValidFile   *bufferedFile
+	serviceFiles   map[string]*bufferedFile
 	stats          map[string]int
 	seenEntries    map[string]bool
 	allByService   map[string][]string // aggregated for all.txt
 	validByService map[string][]string // aggregated for all_valid.txt
 	smtpEntries    []*smtpEntry        // accumulated SMTP connection blocks
+	stopFlush      chan struct{}
 }
 
 func NewTreasureWriter(outputDir string) *TreasureWriter {
@@ -67,21 +89,38 @@ func NewTreasureWriter(outputDir string) *TreasureWriter {
 	af, _ := os.OpenFile(filepath.Join(tDir, "all.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	avf, _ := os.OpenFile(filepath.Join(tDir, "all_valid.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 
-	return &TreasureWriter{
-		treasureDir:  tDir,
-		hitsFile:     hf,
-		allFile:      af,
-		allValidFile: avf,
-		serviceFiles:   make(map[string]*os.File),
+	tw := &TreasureWriter{
+		treasureDir:    tDir,
+		hitsFile:       newBufferedFile(hf),
+		allFile:        newBufferedFile(af),
+		allValidFile:   newBufferedFile(avf),
+		serviceFiles:   make(map[string]*bufferedFile),
 		stats:          make(map[string]int),
 		seenEntries:    make(map[string]bool),
 		allByService:   make(map[string][]string),
 		validByService: make(map[string][]string),
 		smtpEntries:    nil,
+		stopFlush:      make(chan struct{}),
 	}
+
+	// Periodic flush every 5 seconds
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				tw.flushAll()
+			case <-tw.stopFlush:
+				return
+			}
+		}
+	}()
+
+	return tw
 }
 
-func (tw *TreasureWriter) getServiceFile(service string) *os.File {
+func (tw *TreasureWriter) getServiceFile(service string) *bufferedFile {
 	if service == "" {
 		return nil
 	}
@@ -93,8 +132,9 @@ func (tw *TreasureWriter) getServiceFile(service string) *os.File {
 	if err != nil {
 		return nil
 	}
-	tw.serviceFiles[service] = f
-	return f
+	bf := newBufferedFile(f)
+	tw.serviceFiles[service] = bf
+	return bf
 }
 
 func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []extractors.Secret) {
@@ -122,7 +162,7 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 			tag = " [" + s.Service + "]"
 		}
 		line := fmt.Sprintf("[%s] %s — %s: %s%s\n", ts, sourceURL, s.Type, s.Value, tag)
-		tw.hitsFile.Write([]byte(line))
+		tw.hitsFile.WriteString(line)
 	}
 
 	svcGroups := make(map[string][]extractors.Secret)
@@ -188,26 +228,26 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		if f := tw.getServiceFile("smtp"); f != nil {
 			header := fmt.Sprintf("\n%s - %s\n", sourceURL, scanType)
 			header += strings.Repeat("-", minInt(len(strings.TrimSpace(header)), 80)) + "\n"
-			f.Write([]byte(header))
+			f.WriteString(header)
 			if entry.Provider != "" {
-				f.Write([]byte(fmt.Sprintf("provider: %s\n", entry.Provider)))
+				f.WriteString(fmt.Sprintf("provider: %s\n", entry.Provider))
 			}
 			if entry.Host != "" {
-				f.Write([]byte(fmt.Sprintf("host: %s\n", entry.Host)))
+				f.WriteString(fmt.Sprintf("host: %s\n", entry.Host))
 			}
 			if entry.Port != "" {
-				f.Write([]byte(fmt.Sprintf("port: %s\n", entry.Port)))
+				f.WriteString(fmt.Sprintf("port: %s\n", entry.Port))
 			}
 			if entry.User != "" {
-				f.Write([]byte(fmt.Sprintf("user: %s\n", entry.User)))
+				f.WriteString(fmt.Sprintf("user: %s\n", entry.User))
 			}
 			if entry.Password != "" {
-				f.Write([]byte(fmt.Sprintf("password: %s\n", entry.Password)))
+				f.WriteString(fmt.Sprintf("password: %s\n", entry.Password))
 			}
 			if entry.URL != "" {
-				f.Write([]byte(fmt.Sprintf("url: %s\n", entry.URL)))
+				f.WriteString(fmt.Sprintf("url: %s\n", entry.URL))
 			}
-			f.Write([]byte("\n"))
+			f.WriteString("\n")
 		}
 	}
 
@@ -219,11 +259,11 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		}
 		header := fmt.Sprintf("\n%s - %s\n", sourceURL, scanType)
 		header += strings.Repeat("-", minInt(len(strings.TrimSpace(header)), 80)) + "\n"
-		f.Write([]byte(header))
+		f.WriteString(header)
 		for _, s := range svcSecrets {
-			f.Write([]byte(fmt.Sprintf("%s: %s\n", s.Type, s.Value)))
+			f.WriteString(fmt.Sprintf("%s: %s\n", s.Type, s.Value))
 		}
-		f.Write([]byte("\n"))
+		f.WriteString("\n")
 		tw.stats[svc] += len(svcSecrets)
 	}
 
@@ -244,7 +284,7 @@ func (tw *TreasureWriter) WriteValid(sourceURL, service, key, detail string) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	if f := tw.getServiceFile(service); f != nil {
-		f.Write([]byte(fmt.Sprintf("[VALID] %s — %s\n  Source: %s\n\n", key, detail, sourceURL)))
+		f.WriteString(fmt.Sprintf("[VALID] %s — %s\n  Source: %s\n\n", key, detail, sourceURL))
 	}
 	// Accumulate for aggregated all_valid.txt (written in Close)
 	if !excludeFromAll[service] {
@@ -285,7 +325,21 @@ func (tw *TreasureWriter) GetStats() map[string]int {
 	return out
 }
 
+func (tw *TreasureWriter) flushAll() {
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+	if tw.hitsFile != nil {
+		tw.hitsFile.Flush()
+	}
+	for _, f := range tw.serviceFiles {
+		f.Flush()
+	}
+}
+
 func (tw *TreasureWriter) Close() {
+	// Stop periodic flusher
+	close(tw.stopFlush)
+
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 
@@ -298,11 +352,11 @@ func (tw *TreasureWriter) Close() {
 		sort.Strings(svcs)
 		for _, svc := range svcs {
 			vals := tw.allByService[svc]
-			tw.allFile.Write([]byte(fmt.Sprintf("%s - %d hits\n", svc, len(vals))))
+			tw.allFile.WriteString(fmt.Sprintf("%s - %d hits\n", svc, len(vals)))
 			for _, v := range vals {
-				tw.allFile.Write([]byte(v + "\n"))
+				tw.allFile.WriteString(v + "\n")
 			}
-			tw.allFile.Write([]byte("\n"))
+			tw.allFile.WriteString("\n")
 		}
 	}
 
@@ -315,21 +369,21 @@ func (tw *TreasureWriter) Close() {
 		sort.Strings(svcs)
 		for _, svc := range svcs {
 			vals := tw.validByService[svc]
-			tw.allValidFile.Write([]byte(fmt.Sprintf("%s - %d hits\n", svc, len(vals))))
+			tw.allValidFile.WriteString(fmt.Sprintf("%s - %d hits\n", svc, len(vals)))
 			for _, v := range vals {
-				tw.allValidFile.Write([]byte(v + "\n"))
+				tw.allValidFile.WriteString(v + "\n")
 			}
-			tw.allValidFile.Write([]byte("\n"))
+			tw.allValidFile.WriteString("\n")
 		}
 	}
 
-	for _, f := range []*os.File{tw.hitsFile, tw.allFile, tw.allValidFile} {
-		if f != nil {
-			f.Close()
+	for _, bf := range []*bufferedFile{tw.hitsFile, tw.allFile, tw.allValidFile} {
+		if bf != nil {
+			bf.Close()
 		}
 	}
-	for _, f := range tw.serviceFiles {
-		f.Close()
+	for _, bf := range tw.serviceFiles {
+		bf.Close()
 	}
 }
 

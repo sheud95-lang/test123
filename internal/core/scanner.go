@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"reaper/internal/config"
 	"reaper/internal/extractors"
@@ -21,34 +22,72 @@ type Scanner interface {
 	Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *ScanResult
 }
 
+// ---- Lock-free rate limiter (atomic CAS) ----
+
+type atomicFloat64 struct {
+	v uint64
+}
+
+func (a *atomicFloat64) Load() float64 {
+	bits := atomic.LoadUint64(&a.v)
+	return *(*float64)(unsafe.Pointer(&bits))
+}
+
+func (a *atomicFloat64) Store(val float64) {
+	bits := *(*uint64)(unsafe.Pointer(&val))
+	atomic.StoreUint64(&a.v, bits)
+}
+
+func (a *atomicFloat64) CAS(old, new float64) bool {
+	oldBits := *(*uint64)(unsafe.Pointer(&old))
+	newBits := *(*uint64)(unsafe.Pointer(&new))
+	return atomic.CompareAndSwapUint64(&a.v, oldBits, newBits)
+}
+
 type RateLimiter struct {
-	mu     sync.Mutex
 	rps    float64
-	tokens float64
 	maxTok float64
-	lastT  time.Time
+	tokens atomicFloat64
+	lastNs int64 // unix nanos
 }
 
 func NewRateLimiter(rps, burst int) *RateLimiter {
-	return &RateLimiter{rps: float64(rps), tokens: float64(burst), maxTok: float64(burst), lastT: time.Now()}
+	rl := &RateLimiter{rps: float64(rps), maxTok: float64(burst)}
+	rl.tokens.Store(float64(burst))
+	atomic.StoreInt64(&rl.lastNs, time.Now().UnixNano())
+	return rl
 }
 
 func (rl *RateLimiter) Acquire() {
+	sleepDur := time.Duration(float64(time.Second) / rl.rps)
 	for {
-		rl.mu.Lock()
-		now := time.Now()
-		rl.tokens += now.Sub(rl.lastT).Seconds() * rl.rps
-		if rl.tokens > rl.maxTok {
-			rl.tokens = rl.maxTok
+		now := time.Now().UnixNano()
+		lastNs := atomic.LoadInt64(&rl.lastNs)
+		elapsed := float64(now-lastNs) / 1e9
+		if elapsed > 0 && atomic.CompareAndSwapInt64(&rl.lastNs, lastNs, now) {
+			// Refill tokens
+			for {
+				cur := rl.tokens.Load()
+				newTok := cur + elapsed*rl.rps
+				if newTok > rl.maxTok {
+					newTok = rl.maxTok
+				}
+				if rl.tokens.CAS(cur, newTok) {
+					break
+				}
+			}
 		}
-		rl.lastT = now
-		if rl.tokens >= 1.0 {
-			rl.tokens--
-			rl.mu.Unlock()
-			return
+		// Try consume one token
+		for {
+			cur := rl.tokens.Load()
+			if cur < 1.0 {
+				break
+			}
+			if rl.tokens.CAS(cur, cur-1.0) {
+				return
+			}
 		}
-		rl.mu.Unlock()
-		time.Sleep(time.Duration(float64(time.Second) / rl.rps))
+		time.Sleep(sleepDur)
 	}
 }
 
@@ -97,16 +136,11 @@ func (se *ScannerEngine) Stop() { atomic.StoreInt32(&se.stop, 1) }
 func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) != 0 }
 
 // Scanners that need the full wordlist (every path).
-// All others get only a small set of entry-point paths.
 var fullPathScanners = map[string]bool{"path": true, "r2s": true}
 
 // Entry-point paths for scanners that do their own internal path discovery.
 var entryPaths = []string{"/", "/index.html", "/index.php", "/home", "/app"}
 
-// pathsForScanner returns the path list a scanner should actually iterate.
-// "path" and "r2s" get the full wordlist.
-// "git", "uafr", "nvca", "js", "ajs" only need a few entry points —
-// they discover their own sub-paths internally.
 func pathsForScanner(name string, allPaths []string) []string {
 	if fullPathScanners[name] {
 		return allPaths
@@ -115,7 +149,7 @@ func pathsForScanner(name string, allPaths []string) []string {
 }
 
 func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGenerator) {
-	// L4 banner grab: once per target (not per path/scanner)
+	// L4 banner grab: once per target
 	if (se.Config.ScanMode == "L4" || se.Config.ScanMode == "L4+L7") && target.IsIP {
 		banner := GrabBanner(target.Host, target.Port, se.Config.ConnectTimeout)
 		if banner != "" {
@@ -142,11 +176,11 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		scheme = "http"
 	}
 
-	// Pre-probe: quick check if target is alive before committing to all paths
+	// Pre-probe: quick check if target is alive
 	probeURL := fmt.Sprintf("%s://%s:%d/", scheme, target.Host, target.Port)
 	probe := utils.Fetch(se.client, probeURL, "HEAD", nil, 0, 0)
 	if probe == nil {
-		return // target dead, skip entirely
+		return
 	}
 
 	for sName, scanner := range se.scanners {
@@ -211,13 +245,18 @@ func collectRawLines(secrets []extractors.Secret) string {
 	return strings.Join(lines, "\n")
 }
 
+// scanTask is a unit of work for the worker pool.
+type scanTask struct {
+	target *Target
+	paths  []string
+	tg     *TargetGenerator
+}
+
 func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenerator) {
 	se.start = time.Now()
 	se.count = 0
-	sem := make(chan struct{}, se.Config.MaxConcurrentReqs)
-	var wg sync.WaitGroup
 
-	// Estimate: path+r2s get full wordlist, others get entryPaths only
+	// Estimate requests
 	fullCount, entryCount := 0, 0
 	for _, en := range se.Config.EnabledScanners {
 		if fullPathScanners[en] {
@@ -230,66 +269,83 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	log.Printf("Scan: %d targets | %d paths | %d scanners (est ~%d reqs, %d full-path + %d entry-only)",
 		len(targets), len(paths), len(se.Config.EnabledScanners), estReqs, fullCount, entryCount)
 
+	// Fixed worker pool instead of goroutine-per-target
+	numWorkers := se.Config.MaxConcurrentReqs
+	taskCh := make(chan scanTask, numWorkers*2)
+	var wg sync.WaitGroup
+
+	// Start workers
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for task := range taskCh {
+				if se.isStopped() {
+					continue // drain channel
+				}
+				se.ScanTarget(task.target, task.paths, task.tg)
+			}
+		}()
+	}
+
+	// Feed targets in batches, log progress between batches
 	batchSize := 500
-	for i := 0; i < len(targets); i += batchSize {
+	batchStart := 0
+	for i, t := range targets {
 		if se.isStopped() {
 			break
 		}
-		end := i + batchSize
-		if end > len(targets) {
-			end = len(targets)
-		}
-		for _, t := range targets[i:end] {
-			wg.Add(1)
-			go func(tgt *Target) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				se.ScanTarget(tgt, paths, tg)
-			}(t)
-		}
-		wg.Wait()
+		taskCh <- scanTask{target: t, paths: paths, tg: tg}
 
-		elapsed := time.Since(se.start).Seconds()
-		c := atomic.LoadInt64(&se.count)
-		rps := float64(0)
-		if elapsed > 0 {
-			rps = float64(c) / elapsed
-		}
-		stats := se.Results.Stats()
-		log.Printf("Progress: %d/%d | %d reqs | %.0f RPS | Secret hits: %d | Unique secrets: %d | New targets: %d",
-			end, len(targets), c, rps,
-			stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"])
-
-		if tg != nil {
-			existing := make(map[string]bool)
-			for _, t := range targets {
-				existing[fmt.Sprintf("%s:%d", t.Host, t.Port)] = true
+		// Log progress every batchSize targets submitted
+		if (i+1)%batchSize == 0 || i == len(targets)-1 {
+			// Wait for current batch to mostly drain by checking count
+			end := i + 1
+			for {
+				pending := end - batchStart - int(atomic.LoadInt64(&se.count)-int64(batchStart))
+				if pending < numWorkers || se.isStopped() {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
-			var chain []*Target
-			for _, nt := range tg.GetTargets() {
-				if nt.Priority > 0 && !existing[fmt.Sprintf("%s:%d", nt.Host, nt.Port)] {
-					chain = append(chain, nt)
-					if len(chain) >= 100 {
-						break
+
+			elapsed := time.Since(se.start).Seconds()
+			c := atomic.LoadInt64(&se.count)
+			rps := float64(0)
+			if elapsed > 0 {
+				rps = float64(c) / elapsed
+			}
+			stats := se.Results.Stats()
+			log.Printf("Progress: %d/%d | %d reqs | %.0f RPS | Secret hits: %d | Unique secrets: %d | New targets: %d",
+				end, len(targets), c, rps,
+				stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"])
+			batchStart = end
+
+			// Chain new targets between batches
+			if tg != nil {
+				existing := make(map[string]bool)
+				for _, et := range targets {
+					existing[fmt.Sprintf("%s:%d", et.Host, et.Port)] = true
+				}
+				chainCount := 0
+				for _, nt := range tg.GetTargets() {
+					if nt.Priority > 0 && !existing[fmt.Sprintf("%s:%d", nt.Host, nt.Port)] {
+						taskCh <- scanTask{target: nt, paths: paths, tg: tg}
+						chainCount++
+						if chainCount >= 100 {
+							break
+						}
 					}
 				}
-			}
-			if len(chain) > 0 {
-				log.Printf("Chaining: %d new targets", len(chain))
-				for _, t := range chain {
-					wg.Add(1)
-					go func(tgt *Target) {
-						defer wg.Done()
-						sem <- struct{}{}
-						defer func() { <-sem }()
-						se.ScanTarget(tgt, paths, tg)
-					}(t)
+				if chainCount > 0 {
+					log.Printf("Chaining: %d new targets", chainCount)
 				}
-				wg.Wait()
 			}
 		}
 	}
+
+	close(taskCh)
+	wg.Wait()
 
 	elapsed := time.Since(se.start).Seconds()
 	c := atomic.LoadInt64(&se.count)

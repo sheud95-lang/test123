@@ -7,8 +7,70 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// ---- sync.Pool for body read buffers ----
+
+var bodyPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 64*1024) // 64KB initial cap
+		return &b
+	},
+}
+
+func getBodyBuf() *[]byte {
+	return bodyPool.Get().(*[]byte)
+}
+
+func putBodyBuf(b *[]byte) {
+	*b = (*b)[:0]
+	bodyPool.Put(b)
+}
+
+// ---- DNS cache ----
+
+type dnsCacheEntry struct {
+	addrs []string
+	ts    time.Time
+}
+
+var (
+	dnsCache    sync.Map
+	dnsCacheTTL = 5 * time.Minute
+)
+
+func cachedDialContext(dialer *net.Dialer) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		// Skip cache for IPs
+		if net.ParseIP(host) != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		// Check cache
+		if val, ok := dnsCache.Load(host); ok {
+			entry := val.(*dnsCacheEntry)
+			if time.Since(entry.ts) < dnsCacheTTL && len(entry.addrs) > 0 {
+				// Use first cached addr
+				return dialer.DialContext(ctx, network, net.JoinHostPort(entry.addrs[0], port))
+			}
+			dnsCache.Delete(host)
+		}
+		// Resolve and cache
+		addrs, err := net.DefaultResolver.LookupHost(ctx, host)
+		if err != nil || len(addrs) == 0 {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		dnsCache.Store(host, &dnsCacheEntry{addrs: addrs, ts: time.Now()})
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addrs[0], port))
+	}
+}
+
+// ---- HTTP Response ----
 
 type HTTPResponse struct {
 	URL     string
@@ -18,20 +80,30 @@ type HTTPResponse struct {
 	Size    int
 }
 
+const maxBodySize = 5 * 1024 * 1024 // 5MB
+
 func NewHTTPClient(connectTimeout, readTimeout, totalTimeout time.Duration,
 	maxConnsPerHost, totalLimit int) *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   connectTimeout,
+		KeepAlive: 30 * time.Second,
+	}
 	transport := &http.Transport{
 		// InsecureSkipVerify: scanning tool connecting to arbitrary hosts with self-signed/expired certs.
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialContext: (&net.Dialer{
-			Timeout:   connectTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:        totalLimit,
-		MaxIdleConnsPerHost: maxConnsPerHost,
-		MaxConnsPerHost:     maxConnsPerHost,
-		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   true,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			SessionTicketsDisabled: false,
+		},
+		DialContext:           cachedDialContext(dialer),
+		MaxIdleConns:          totalLimit,
+		MaxIdleConnsPerHost:   maxConnsPerHost,
+		MaxConnsPerHost:       maxConnsPerHost,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: readTimeout,
+		WriteBufferSize:       4096,
+		ReadBufferSize:        8192,
+		DisableCompression:    true, // avoid decompression overhead for scanning
+		ForceAttemptHTTP2:     false, // HTTP/1.1 faster for mass scanning (no stream multiplexing overhead)
 	}
 	return &http.Client{
 		Transport: transport,
@@ -68,21 +140,26 @@ func Fetch(client *http.Client, url, method string, headers map[string]string,
 			}
 			continue
 		}
-		bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		buf := getBodyBuf()
+		*buf, err = io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 		resp.Body.Close()
 		cancel()
 		if err != nil {
+			putBodyBuf(buf)
 			if attempt < maxRetries {
 				time.Sleep(retryDelay * time.Duration(attempt+1))
 			}
 			continue
 		}
+		body := string(*buf)
+		size := len(*buf)
+		putBodyBuf(buf)
 		return &HTTPResponse{
-			URL:     resp.Request.URL.String(),
-			Status:  resp.StatusCode,
+			URL:    resp.Request.URL.String(),
+			Status: resp.StatusCode,
 			Headers: resp.Header,
-			Body:    string(bodyBytes),
-			Size:    len(bodyBytes),
+			Body:   body,
+			Size:   size,
 		}
 	}
 	return nil
@@ -101,7 +178,7 @@ func FetchRaw(ctx context.Context, client *http.Client, url string, headers map[
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	return data, resp.StatusCode, err
 }
 

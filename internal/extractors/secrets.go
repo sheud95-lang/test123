@@ -17,178 +17,180 @@ type Secret struct {
 }
 
 type secretPattern struct {
-	Name    string
-	Pattern *regexp.Regexp
-	Group   int
-	Service string
+	Name       string
+	Pattern    *regexp.Regexp
+	Group      int
+	Service    string
+	QuickCheck string // fast pre-filter: lowercase line must contain this before regex runs
 }
 
 var secretPatterns []secretPattern
 
 func init() {
-	defs := []struct {
-		name, pattern, service string
-		group                  int
-	}{
+	type def struct {
+		name, pattern, service, quick string
+		group                         int
+	}
+	defs := []def{
 		// AWS
-		{"AWS_ACCESS_KEY", `\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, "aws", 0},
-		{"AWS_SECRET_KEY", `(?i)(?:aws_secret_access_key|aws_secret)\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?`, "aws", 1},
-		{"AWS_SESSION_TOKEN", `(?i)AWS_SESSION_TOKEN\s*[=:]\s*['"]?([A-Za-z0-9/+=]{100,})['"]?`, "aws", 1},
-		{"AWS_MWS_KEY", `amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, "aws", 0},
+		{"AWS_ACCESS_KEY", `\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`, "aws", "aki", 0},
+		{"AWS_SECRET_KEY", `(?i)(?:aws_secret_access_key|aws_secret)\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?`, "aws", "aws_secret", 1},
+		{"AWS_SESSION_TOKEN", `(?i)AWS_SESSION_TOKEN\s*[=:]\s*['"]?([A-Za-z0-9/+=]{100,})['"]?`, "aws", "aws_session", 1},
+		{"AWS_MWS_KEY", `amzn\.mws\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`, "aws", "amzn.mws.", 0},
 
 		// Google / GCP
-		{"GOOGLE_API_KEY", `AIza[0-9A-Za-z_-]{35}`, "google", 0},
-		{"GOOGLE_OAUTH", `[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, "google", 0},
-		{"GCP_SERVICE_ACCOUNT", `"type"\s*:\s*"service_account"`, "gcp", 0},
-		{"GCP_OAUTH_SECRET", `GOCSPX-[A-Za-z0-9_-]{28}`, "google", 0},
+		{"GOOGLE_API_KEY", `AIza[0-9A-Za-z_-]{35}`, "google", "aiza", 0},
+		{"GOOGLE_OAUTH", `[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, "google", "googleusercontent.com", 0},
+		{"GCP_SERVICE_ACCOUNT", `"type"\s*:\s*"service_account"`, "gcp", "service_account", 0},
+		{"GCP_OAUTH_SECRET", `GOCSPX-[A-Za-z0-9_-]{28}`, "google", "gocspx-", 0},
 
 		// Azure
-		{"AZURE_CLIENT_SECRET", `(?i)(?:AZURE_CLIENT_SECRET|AZURE_AD_CLIENT_SECRET)\s*[=:]\s*['"]?([A-Za-z0-9~._-]{34,})['"]?`, "azure", 1},
-		{"AZURE_STORAGE_KEY", `(?i)(?:AZURE_STORAGE_KEY|AZURE_STORAGE_ACCOUNT_KEY)\s*[=:]\s*['"]?([A-Za-z0-9+/]{86}==)['"]?`, "azure", 1},
-		{"AZURE_CONNECTION_STRING", `DefaultEndpointsProtocol=https?;AccountName=[^;]{3,63};AccountKey=[A-Za-z0-9+/]{86}==`, "azure", 0},
+		{"AZURE_CLIENT_SECRET", `(?i)(?:AZURE_CLIENT_SECRET|AZURE_AD_CLIENT_SECRET)\s*[=:]\s*['"]?([A-Za-z0-9~._-]{34,})['"]?`, "azure", "azure_client_secret", 1},
+		{"AZURE_STORAGE_KEY", `(?i)(?:AZURE_STORAGE_KEY|AZURE_STORAGE_ACCOUNT_KEY)\s*[=:]\s*['"]?([A-Za-z0-9+/]{86}==)['"]?`, "azure", "azure_storage", 1},
+		{"AZURE_CONNECTION_STRING", `DefaultEndpointsProtocol=https?;AccountName=[^;]{3,63};AccountKey=[A-Za-z0-9+/]{86}==`, "azure", "defaultendpointsprotocol=", 0},
 
 		// DigitalOcean
-		{"DIGITALOCEAN_TOKEN", `\bdop_v1_[a-f0-9]{64}\b`, "digitalocean", 0},
-		{"DIGITALOCEAN_REFRESH", `\bdor_v1_[a-f0-9]{64}\b`, "digitalocean", 0},
+		{"DIGITALOCEAN_TOKEN", `\bdop_v1_[a-f0-9]{64}\b`, "digitalocean", "dop_v1_", 0},
+		{"DIGITALOCEAN_REFRESH", `\bdor_v1_[a-f0-9]{64}\b`, "digitalocean", "dor_v1_", 0},
 
 		// GitHub
-		{"GITHUB_PAT", `\bgithub_pat_[A-Za-z0-9_]{36,255}\b`, "github", 0},
-		{"GITHUB_OAUTH", `\bgho_[A-Za-z0-9]{36,255}\b`, "github", 0},
-		{"GITHUB_USER_TOKEN", `\bghu_[A-Za-z0-9]{36,255}\b`, "github", 0},
-		{"GITHUB_SERVER_TOKEN", `\bghs_[A-Za-z0-9]{36,255}\b`, "github", 0},
-		{"GITHUB_REFRESH", `\bghr_[A-Za-z0-9]{36,255}\b`, "github", 0},
-		{"GITHUB_CLASSIC", `\bghp_[A-Za-z0-9]{36,255}\b`, "github", 0},
+		{"GITHUB_PAT", `\bgithub_pat_[A-Za-z0-9_]{36,255}\b`, "github", "github_pat_", 0},
+		{"GITHUB_OAUTH", `\bgho_[A-Za-z0-9]{36,255}\b`, "github", "gho_", 0},
+		{"GITHUB_USER_TOKEN", `\bghu_[A-Za-z0-9]{36,255}\b`, "github", "ghu_", 0},
+		{"GITHUB_SERVER_TOKEN", `\bghs_[A-Za-z0-9]{36,255}\b`, "github", "ghs_", 0},
+		{"GITHUB_REFRESH", `\bghr_[A-Za-z0-9]{36,255}\b`, "github", "ghr_", 0},
+		{"GITHUB_CLASSIC", `\bghp_[A-Za-z0-9]{36,255}\b`, "github", "ghp_", 0},
 
 		// GitLab
-		{"GITLAB_PAT", `\bglpat-[A-Za-z0-9_-]{20,}\b`, "gitlab", 0},
-		{"GITLAB_PIPELINE", `\bglptt-[A-Za-z0-9_-]{20,}\b`, "gitlab", 0},
-		{"GITLAB_RUNNER", `\bGR1348941[A-Za-z0-9_-]{20,}\b`, "gitlab", 0},
+		{"GITLAB_PAT", `\bglpat-[A-Za-z0-9_-]{20,}\b`, "gitlab", "glpat-", 0},
+		{"GITLAB_PIPELINE", `\bglptt-[A-Za-z0-9_-]{20,}\b`, "gitlab", "glptt-", 0},
+		{"GITLAB_RUNNER", `\bGR1348941[A-Za-z0-9_-]{20,}\b`, "gitlab", "gr1348941", 0},
 
 		// Slack
-		{"SLACK_BOT_TOKEN", `\bxoxb-[A-Za-z0-9-]{10,}\b`, "slack", 0},
-		{"SLACK_USER_TOKEN", `\bxoxp-[A-Za-z0-9-]{10,}\b`, "slack", 0},
-		{"SLACK_APP_TOKEN", `\bxapp-[A-Za-z0-9-]{10,}\b`, "slack", 0},
-		{"SLACK_WEBHOOK", `https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+`, "slack", 0},
+		{"SLACK_BOT_TOKEN", `\bxoxb-[A-Za-z0-9-]{10,}\b`, "slack", "xoxb-", 0},
+		{"SLACK_USER_TOKEN", `\bxoxp-[A-Za-z0-9-]{10,}\b`, "slack", "xoxp-", 0},
+		{"SLACK_APP_TOKEN", `\bxapp-[A-Za-z0-9-]{10,}\b`, "slack", "xapp-", 0},
+		{"SLACK_WEBHOOK", `https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+`, "slack", "hooks.slack.com", 0},
 
 		// Discord
-		{"DISCORD_BOT_TOKEN", `[MN][A-Za-z\d]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}`, "discord", 0},
-		{"DISCORD_WEBHOOK", `https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+`, "discord", 0},
+		{"DISCORD_BOT_TOKEN", `[MN][A-Za-z\d]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}`, "discord", "", 0},
+		{"DISCORD_WEBHOOK", `https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+`, "discord", "discord", 0},
 
 		// Telegram
-		{"TELEGRAM_BOT_TOKEN", `\b\d{8,12}:AA[A-Za-z0-9_-]{33,35}\b`, "telegram", 0},
+		{"TELEGRAM_BOT_TOKEN", `\b\d{8,12}:AA[A-Za-z0-9_-]{33,35}\b`, "telegram", ":aa", 0},
 
 		// Stripe
-		{"STRIPE_SECRET_KEY", `\bsk_live_[A-Za-z0-9]{24,}\b`, "stripe", 0},
-		{"STRIPE_RESTRICTED_KEY", `\brk_live_[A-Za-z0-9]{24,}\b`, "stripe", 0},
-		{"STRIPE_WEBHOOK_SECRET", `\bwhsec_[A-Za-z0-9]{32,}\b`, "stripe", 0},
-		{"STRIPE_TEST_SECRET", `\bsk_test_[A-Za-z0-9]{24,}\b`, "stripe", 0},
+		{"STRIPE_SECRET_KEY", `\bsk_live_[A-Za-z0-9]{24,}\b`, "stripe", "sk_live_", 0},
+		{"STRIPE_RESTRICTED_KEY", `\brk_live_[A-Za-z0-9]{24,}\b`, "stripe", "rk_live_", 0},
+		{"STRIPE_WEBHOOK_SECRET", `\bwhsec_[A-Za-z0-9]{32,}\b`, "stripe", "whsec_", 0},
+		{"STRIPE_TEST_SECRET", `\bsk_test_[A-Za-z0-9]{24,}\b`, "stripe", "sk_test_", 0},
 
 		// PayPal
-		{"PAYPAL_CLIENT_ID", `(?i)PAYPAL_CLIENT_ID\s*[=:]\s*['"]?(A[A-Za-z0-9_-]{60,80})['"]?`, "paypal", 1},
-		{"PAYPAL_SECRET", `(?i)(?:PAYPAL_SECRET|PAYPAL_CLIENT_SECRET)\s*[=:]\s*['"]?(E[A-Za-z0-9_-]{60,80})['"]?`, "paypal", 1},
+		{"PAYPAL_CLIENT_ID", `(?i)PAYPAL_CLIENT_ID\s*[=:]\s*['"]?(A[A-Za-z0-9_-]{60,80})['"]?`, "paypal", "paypal_client_id", 1},
+		{"PAYPAL_SECRET", `(?i)(?:PAYPAL_SECRET|PAYPAL_CLIENT_SECRET)\s*[=:]\s*['"]?(E[A-Za-z0-9_-]{60,80})['"]?`, "paypal", "paypal_", 1},
 
 		// Square
-		{"SQUARE_ACCESS_TOKEN", `\bsq0atp-[A-Za-z0-9_-]{22}\b`, "square", 0},
-		{"SQUARE_OAUTH_SECRET", `\bsq0csp-[A-Za-z0-9_-]{43}\b`, "square", 0},
+		{"SQUARE_ACCESS_TOKEN", `\bsq0atp-[A-Za-z0-9_-]{22}\b`, "square", "sq0atp-", 0},
+		{"SQUARE_OAUTH_SECRET", `\bsq0csp-[A-Za-z0-9_-]{43}\b`, "square", "sq0csp-", 0},
 
 		// Twilio
-		{"TWILIO_ACCOUNT_SID", `(?i)(?:twilio|account.?sid|ACCOUNT_SID)\s*[=:]\s*['"]?(AC[0-9a-f]{32})['"]?`, "twilio", 1},
-		{"TWILIO_AUTH_TOKEN", `(?i)(?:TWILIO_AUTH_TOKEN|TWILIO_TOKEN)\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`, "twilio", 1},
+		{"TWILIO_ACCOUNT_SID", `(?i)(?:twilio|account.?sid|ACCOUNT_SID)\s*[=:]\s*['"]?(AC[0-9a-f]{32})['"]?`, "twilio", "", 1},
+		{"TWILIO_AUTH_TOKEN", `(?i)(?:TWILIO_AUTH_TOKEN|TWILIO_TOKEN)\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`, "twilio", "twilio", 1},
 
 		// SendGrid
-		{"SENDGRID_KEY", `\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b`, "sendgrid", 0},
+		{"SENDGRID_KEY", `\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b`, "sendgrid", "sg.", 0},
 
 		// Mailgun
-		{"MAILGUN_KEY", `\bkey-[a-f0-9]{32}\b`, "mailgun", 0},
+		{"MAILGUN_KEY", `\bkey-[a-f0-9]{32}\b`, "mailgun", "key-", 0},
 
 		// Mailchimp
-		{"MAILCHIMP_KEY", `\b[a-f0-9]{32}-us\d{1,2}\b`, "mailchimp", 0},
+		{"MAILCHIMP_KEY", `\b[a-f0-9]{32}-us\d{1,2}\b`, "mailchimp", "-us", 0},
 
 		// OpenAI
-		{"OPENAI_KEY", `\bsk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}\b`, "openai", 0},
-		{"OPENAI_KEY_V2", `\bsk-proj-[A-Za-z0-9_-]{40,}\b`, "openai", 0},
+		{"OPENAI_KEY", `\bsk-[A-Za-z0-9]{20,}T3BlbkFJ[A-Za-z0-9]{20,}\b`, "openai", "t3blbkfj", 0},
+		{"OPENAI_KEY_V2", `\bsk-proj-[A-Za-z0-9_-]{40,}\b`, "openai", "sk-proj-", 0},
 
 		// Anthropic
-		{"ANTHROPIC_KEY", `\bsk-ant-api[0-9]{2}-[A-Za-z0-9_-]{30,}\b`, "anthropic", 0},
+		{"ANTHROPIC_KEY", `\bsk-ant-api[0-9]{2}-[A-Za-z0-9_-]{30,}\b`, "anthropic", "sk-ant-api", 0},
 
 		// Grok / xAI
-		{"GROK_KEY", `\bxai-[A-Za-z0-9_-]{30,}\b`, "grok", 0},
+		{"GROK_KEY", `\bxai-[A-Za-z0-9_-]{30,}\b`, "grok", "xai-", 0},
 
 		// HuggingFace
-		{"HUGGINGFACE_TOKEN", `\bhf_[A-Za-z0-9]{20,}\b`, "huggingface", 0},
+		{"HUGGINGFACE_TOKEN", `\bhf_[A-Za-z0-9]{20,}\b`, "huggingface", "hf_", 0},
 
 		// Replicate
-		{"REPLICATE_TOKEN", `\br8_[A-Za-z0-9]{36,}\b`, "replicate", 0},
+		{"REPLICATE_TOKEN", `\br8_[A-Za-z0-9]{36,}\b`, "replicate", "r8_", 0},
 
 		// Shopify
-		{"SHOPIFY_ACCESS_TOKEN", `shpat_[A-Za-z0-9]{32}`, "shopify", 0},
-		{"SHOPIFY_PRIVATE_APP", `shpca_[A-Za-z0-9]{32}`, "shopify", 0},
-		{"SHOPIFY_CUSTOM_APP", `shpcb_[A-Za-z0-9]{32}`, "shopify", 0},
-		{"SHOPIFY_SHARED_SECRET", `shpss_[A-Za-z0-9]{32}`, "shopify", 0},
+		{"SHOPIFY_ACCESS_TOKEN", `shpat_[A-Za-z0-9]{32}`, "shopify", "shpat_", 0},
+		{"SHOPIFY_PRIVATE_APP", `shpca_[A-Za-z0-9]{32}`, "shopify", "shpca_", 0},
+		{"SHOPIFY_CUSTOM_APP", `shpcb_[A-Za-z0-9]{32}`, "shopify", "shpcb_", 0},
+		{"SHOPIFY_SHARED_SECRET", `shpss_[A-Za-z0-9]{32}`, "shopify", "shpss_", 0},
 
 		// Heroku
-		{"HEROKU_API_KEY", `(?i)heroku[_-]?(?:api[_-]?)?key\s*[=:]\s*['"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['"]?`, "heroku", 1},
+		{"HEROKU_API_KEY", `(?i)heroku[_-]?(?:api[_-]?)?key\s*[=:]\s*['"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})['"]?`, "heroku", "heroku", 1},
 
 		// Firebase
-		{"FIREBASE_URL", `https://[a-z0-9_-]{3,30}\.firebaseio\.com`, "firebase", 0},
-		{"FIREBASE_SERVER_KEY", `(?i)(?:server[_-]?key|fcm[_-]?key)\s*[=:]\s*['"]?(AAAA[A-Za-z0-9_-]{140,300})['"]?`, "firebase", 1},
+		{"FIREBASE_URL", `https://[a-z0-9_-]{3,30}\.firebaseio\.com`, "firebase", "firebaseio.com", 0},
+		{"FIREBASE_SERVER_KEY", `(?i)(?:server[_-]?key|fcm[_-]?key)\s*[=:]\s*['"]?(AAAA[A-Za-z0-9_-]{140,300})['"]?`, "firebase", "aaaa", 1},
 
 		// Cloudflare
-		{"CLOUDFLARE_API_TOKEN", `(?i)(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN)\s*[=:]\s*['"]?([A-Za-z0-9_-]{40})['"]?`, "cloudflare", 1},
+		{"CLOUDFLARE_API_TOKEN", `(?i)(?:CF_API_TOKEN|CLOUDFLARE_API_TOKEN)\s*[=:]\s*['"]?([A-Za-z0-9_-]{40})['"]?`, "cloudflare", "api_token", 1},
 
 		// Datadog
-		{"DATADOG_API_KEY", `(?i)(?:DD_API_KEY|DATADOG_API_KEY)\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`, "datadog", 1},
+		{"DATADOG_API_KEY", `(?i)(?:DD_API_KEY|DATADOG_API_KEY)\s*[=:]\s*['"]?([a-f0-9]{32})['"]?`, "datadog", "api_key", 1},
 
 		// New Relic
-		{"NEWRELIC_API_KEY", `\bNRAK-[A-Z0-9]{27}\b`, "newrelic", 0},
+		{"NEWRELIC_API_KEY", `\bNRAK-[A-Z0-9]{27}\b`, "newrelic", "nrak-", 0},
 
 		// Sentry
-		{"SENTRY_DSN", `https://[a-f0-9]{32}@(?:o\d+\.)?(?:ingest\.)?sentry\.io/\d+`, "sentry", 0},
+		{"SENTRY_DSN", `https://[a-f0-9]{32}@(?:o\d+\.)?(?:ingest\.)?sentry\.io/\d+`, "sentry", "sentry.io", 0},
 
 		// Grafana
-		{"GRAFANA_API_KEY", `\bglsa_[A-Za-z0-9_-]{32,}_[0-9a-f]{8}\b`, "grafana", 0},
-		{"GRAFANA_CLOUD_KEY", `\bglc_[A-Za-z0-9_-]{32,}\b`, "grafana", 0},
+		{"GRAFANA_API_KEY", `\bglsa_[A-Za-z0-9_-]{32,}_[0-9a-f]{8}\b`, "grafana", "glsa_", 0},
+		{"GRAFANA_CLOUD_KEY", `\bglc_[A-Za-z0-9_-]{32,}\b`, "grafana", "glc_", 0},
 
 		// Vault
-		{"VAULT_TOKEN", `\bhv[sb]\.[A-Za-z0-9]{24,100}\b`, "vault", 0},
+		{"VAULT_TOKEN", `\bhv[sb]\.[A-Za-z0-9]{24,100}\b`, "vault", "hv", 0},
 
 		// NPM / PyPI
-		{"NPM_TOKEN", `\bnpm_[A-Za-z0-9]{36,}\b`, "npm", 0},
-		{"PYPI_TOKEN", `\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b`, "pypi", 0},
+		{"NPM_TOKEN", `\bnpm_[A-Za-z0-9]{36,}\b`, "npm", "npm_", 0},
+		{"PYPI_TOKEN", `\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b`, "pypi", "pypi-", 0},
 
 		// Mapbox
-		{"MAPBOX_TOKEN", `\bpk\.[A-Za-z0-9_-]{60,}\b`, "mapbox", 0},
+		{"MAPBOX_TOKEN", `\bpk\.[A-Za-z0-9_-]{60,}\b`, "mapbox", "pk.", 0},
 
 		// PlanetScale
-		{"PLANETSCALE_TOKEN", `\bpscale_tkn_[A-Za-z0-9_-]{32,}\b`, "planetscale", 0},
-		{"PLANETSCALE_PASSWORD", `\bpscale_pw_[A-Za-z0-9_-]{32,}\b`, "planetscale", 0},
+		{"PLANETSCALE_TOKEN", `\bpscale_tkn_[A-Za-z0-9_-]{32,}\b`, "planetscale", "pscale_tkn_", 0},
+		{"PLANETSCALE_PASSWORD", `\bpscale_pw_[A-Za-z0-9_-]{32,}\b`, "planetscale", "pscale_pw_", 0},
 
 		// Supabase
-		{"SUPABASE_KEY", `(?i)(?:SUPABASE_KEY|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY)\s*[=:]\s*['"]?(eyJ[A-Za-z0-9_-]{100,})['"]?`, "supabase", 1},
+		{"SUPABASE_KEY", `(?i)(?:SUPABASE_KEY|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY)\s*[=:]\s*['"]?(eyJ[A-Za-z0-9_-]{100,})['"]?`, "supabase", "supabase", 1},
 
 		// Private Key
-		{"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", 0},
+		{"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", "private key", 0},
 
 		// JWT
-		{"JWT_SECRET", `(?i)(?:JWT_SECRET|JWT_KEY|JWT_PRIVATE_KEY|JWT_SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9_+/=.\-]{16,})['"]?`, "jwt", 1},
-		{"JWT_TOKEN", `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+`, "jwt", 0},
+		{"JWT_SECRET", `(?i)(?:JWT_SECRET|JWT_KEY|JWT_PRIVATE_KEY|JWT_SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9_+/=.\-]{16,})['"]?`, "jwt", "jwt_", 1},
+		{"JWT_TOKEN", `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+`, "jwt", "eyj", 0},
 
 		// Laravel
-		{"LARAVEL_APP_KEY", `(?i)APP_KEY\s*[=:]\s*['"]?(base64:[A-Za-z0-9+/=]{20,})['"]?`, "laravel", 1},
+		{"LARAVEL_APP_KEY", `(?i)APP_KEY\s*[=:]\s*['"]?(base64:[A-Za-z0-9+/=]{20,})['"]?`, "laravel", "app_key", 1},
 
 		// Django
-		{"DJANGO_SECRET_KEY", `(?i)(?:DJANGO_SECRET_KEY|SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9!@#$%^&*()\-_=+]{50,})['"]?`, "django", 1},
+		{"DJANGO_SECRET_KEY", `(?i)(?:DJANGO_SECRET_KEY|SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9!@#$%^&*()\-_=+]{50,})['"]?`, "django", "secret_key", 1},
 
 		// SMTP
-		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", 0},
-		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)[_\s]*(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", 1},
-		{"SMTP_USER", `(?i)(?:SMTP|MAIL)[_\s]*(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", 1},
-		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)[_\s]*(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", 1},
-		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)[_\s]*PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", 1},
+		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", "smtp", 0},
+		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)[_\s]*(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", "", 1},
+		{"SMTP_USER", `(?i)(?:SMTP|MAIL)[_\s]*(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)[_\s]*(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)[_\s]*PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
 
-		// Basic Auth / Bearer — NOT generic, specific service detection via value
-		{"BASIC_AUTH", `(?i)Basic\s+([A-Za-z0-9+/]{20,}=*)`, "auth", 1},
-		{"BEARER_TOKEN", `(?i)Bearer\s+([A-Za-z0-9_\-.]{20,}={0,2})`, "auth", 1},
+		// Basic Auth / Bearer
+		{"BASIC_AUTH", `(?i)Basic\s+([A-Za-z0-9+/]{20,}=*)`, "auth", "basic ", 1},
+		{"BEARER_TOKEN", `(?i)Bearer\s+([A-Za-z0-9_\-.]{20,}={0,2})`, "auth", "bearer ", 1},
 	}
 
 	for _, d := range defs {
@@ -198,6 +200,7 @@ func init() {
 		}
 		secretPatterns = append(secretPatterns, secretPattern{
 			Name: d.name, Pattern: re, Group: d.group, Service: d.service,
+			QuickCheck: d.quick,
 		})
 	}
 }
@@ -282,7 +285,15 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 	lines := strings.Split(text, "\n")
 
 	for lineNo, line := range lines {
+		if len(line) < 4 {
+			continue
+		}
+		lineLower := strings.ToLower(line)
 		for _, sp := range secretPatterns {
+			// Fast pre-filter: skip regex entirely if quick check fails
+			if sp.QuickCheck != "" && !strings.Contains(lineLower, sp.QuickCheck) {
+				continue
+			}
 			for _, loc := range sp.Pattern.FindAllStringSubmatchIndex(line, -1) {
 				var value string
 				if sp.Group > 0 && len(loc) > sp.Group*2+1 {
@@ -355,8 +366,9 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 	return results
 }
 
+var envRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$`)
+
 func ExtractEnvPairs(text, sourceURL string) []Secret {
-	envRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$`)
 	var results []Secret
 	for lineNo, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
