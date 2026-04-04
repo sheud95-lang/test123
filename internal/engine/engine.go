@@ -65,6 +65,7 @@ func (e *ReaperEngine) Run(wlFiles []string, noDefault bool) error {
 		fmt.Println("\n[!] Ctrl+C — saving results...")
 		e.SE.Stop()
 		e.save()
+		fmt.Printf("Stats: %s\n", e.SE.ScannerStats())
 		fmt.Println(e.RS.Summary())
 		fmt.Printf("[+] Results saved to %s/\n", e.Config.OutputDir)
 		os.Exit(0)

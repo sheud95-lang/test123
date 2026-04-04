@@ -140,6 +140,20 @@ func (se *ScannerEngine) RegisterScanner(s Scanner) {
 
 func (se *ScannerEngine) Stop() { atomic.StoreInt32(&se.stop, 1) }
 
+func (se *ScannerEngine) ScannerStats() string {
+	var parts []string
+	for name, cnt := range se.scanCounts {
+		parts = append(parts, fmt.Sprintf("%s=%d", name, atomic.LoadInt64(cnt)))
+	}
+	elapsed := time.Since(se.start).Seconds()
+	c := atomic.LoadInt64(&se.count)
+	rps := float64(0)
+	if elapsed > 0 {
+		rps = float64(c) / elapsed
+	}
+	return fmt.Sprintf("%d reqs in %.1fs (%.0f RPS) | Scanner calls: %s", c, elapsed, rps, strings.Join(parts, ", "))
+}
+
 func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) != 0 }
 
 // Scanners that need the full wordlist (every path).
