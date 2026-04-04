@@ -116,21 +116,27 @@ type ScannerEngine struct {
 	rl       *RateLimiter
 	scanners map[string]Scanner
 	client   *fasthttp.Client
-	count    int64
-	start    time.Time
-	stop     int32
+	count       int64
+	scanCounts  map[string]*int64 // per-scanner call counter
+	start       time.Time
+	stop        int32
 }
 
 func NewScannerEngine(cfg *config.ScanConfig, rs *ResultStore, tw *TreasureWriter) *ScannerEngine {
 	client := utils.NewFastHTTPClient(cfg.ConnectTimeout, cfg.ReadTimeout, cfg.TotalTimeout, cfg.MaxConnsPerHost, cfg.TotalConnectorLimit)
 	return &ScannerEngine{
 		Config: cfg, Results: rs, Treasure: tw,
-		rl:       NewRateLimiter(cfg.TargetRPS, cfg.BurstSize),
-		scanners: make(map[string]Scanner), client: client,
+		rl:         NewRateLimiter(cfg.TargetRPS, cfg.BurstSize),
+		scanners:   make(map[string]Scanner), client: client,
+		scanCounts: make(map[string]*int64),
 	}
 }
 
-func (se *ScannerEngine) RegisterScanner(s Scanner) { se.scanners[s.Name()] = s }
+func (se *ScannerEngine) RegisterScanner(s Scanner) {
+	se.scanners[s.Name()] = s
+	cnt := int64(0)
+	se.scanCounts[s.Name()] = &cnt
+}
 
 func (se *ScannerEngine) Stop() { atomic.StoreInt32(&se.stop, 1) }
 
@@ -211,6 +217,9 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 			}
 			se.rl.Acquire()
 
+			if cnt := se.scanCounts[sName]; cnt != nil {
+				atomic.AddInt64(cnt, 1)
+			}
 			result := scanner.Scan(se.client, target.Host, target.Port, path, target.IsIP, scheme)
 			if result != nil {
 				added := se.Results.AddResult(*result)
@@ -225,8 +234,10 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 							se.Treasure.WriteEnvDump(result.URL, result.Scanner, envSecrets)
 						}
 					}
-					log.Printf("[%s] %s -> %d secrets, %d targets",
-						sName, result.URL, len(result.Secrets), len(result.NewTargets))
+					if se.Config.Verbose {
+						log.Printf("[%s] %s -> %d secrets, %d targets",
+							sName, result.URL, len(result.Secrets), len(result.NewTargets))
+					}
 				}
 			}
 
@@ -359,5 +370,10 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	if elapsed > 0 {
 		rps = float64(c) / elapsed
 	}
-	log.Printf("Done: %d reqs in %.1fs (%.0f RPS)", c, elapsed, rps)
+	// Per-scanner call counts
+	var scanStats []string
+	for name, cnt := range se.scanCounts {
+		scanStats = append(scanStats, fmt.Sprintf("%s=%d", name, atomic.LoadInt64(cnt)))
+	}
+	log.Printf("Done: %d reqs in %.1fs (%.0f RPS) | Scanner calls: %s", c, elapsed, rps, strings.Join(scanStats, ", "))
 }
