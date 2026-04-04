@@ -5,12 +5,13 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/config"
 	"reaper/internal/extractors"
@@ -19,7 +20,7 @@ import (
 
 type Scanner interface {
 	Name() string
-	Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *ScanResult
+	Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *ScanResult
 }
 
 // ---- Lock-free rate limiter (atomic CAS) ----
@@ -114,14 +115,14 @@ type ScannerEngine struct {
 	Treasure *TreasureWriter
 	rl       *RateLimiter
 	scanners map[string]Scanner
-	client   *http.Client
+	client   *fasthttp.Client
 	count    int64
 	start    time.Time
 	stop     int32
 }
 
 func NewScannerEngine(cfg *config.ScanConfig, rs *ResultStore, tw *TreasureWriter) *ScannerEngine {
-	client := utils.NewHTTPClient(cfg.ConnectTimeout, cfg.ReadTimeout, cfg.TotalTimeout, cfg.MaxConnsPerHost, cfg.TotalConnectorLimit)
+	client := utils.NewFastHTTPClient(cfg.ConnectTimeout, cfg.ReadTimeout, cfg.TotalTimeout, cfg.MaxConnsPerHost, cfg.TotalConnectorLimit)
 	return &ScannerEngine{
 		Config: cfg, Results: rs, Treasure: tw,
 		rl:       NewRateLimiter(cfg.TargetRPS, cfg.BurstSize),

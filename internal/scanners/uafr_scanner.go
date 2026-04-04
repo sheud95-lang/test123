@@ -2,8 +2,9 @@ package scanners
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -63,7 +64,7 @@ type UAFRScanner struct{ WAFEvasion bool }
 
 func (s *UAFRScanner) Name() string { return "uafr" }
 
-func (s *UAFRScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *UAFRScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	var h map[string]string

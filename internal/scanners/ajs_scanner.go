@@ -2,9 +2,10 @@ package scanners
 
 import (
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -22,7 +23,7 @@ type AJSScanner struct{ WAFEvasion bool; MaxEndpoints int }
 
 func (s *AJSScanner) Name() string { return "ajs" }
 
-func (s *AJSScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *AJSScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	mx := s.MaxEndpoints; if mx <= 0 { mx = 100 }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)

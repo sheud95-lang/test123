@@ -6,9 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -25,7 +26,7 @@ type GitScanner struct{ WAFEvasion bool; MaxObjects int }
 
 func (s *GitScanner) Name() string { return "git" }
 
-func (s *GitScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *GitScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	mx := s.MaxObjects; if mx <= 0 { mx = 50 }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)

@@ -2,7 +2,8 @@ package scanners
 
 import (
 	"fmt"
-	"net/http"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -13,7 +14,7 @@ type PathScanner struct{ WAFEvasion bool }
 
 func (s *PathScanner) Name() string { return "path" }
 
-func (s *PathScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *PathScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	p := path
 	if s.WAFEvasion { p = core.MutatePath(path) }

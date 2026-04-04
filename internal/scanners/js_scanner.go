@@ -2,9 +2,10 @@ package scanners
 
 import (
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -36,7 +37,7 @@ type JSScanner struct{ WAFEvasion bool; MaxJSFiles int }
 
 func (s *JSScanner) Name() string { return "js" }
 
-func (s *JSScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *JSScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	mx := s.MaxJSFiles; if mx <= 0 { mx = 50 }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)

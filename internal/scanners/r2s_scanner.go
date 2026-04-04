@@ -2,9 +2,10 @@ package scanners
 
 import (
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -22,7 +23,7 @@ type R2SScanner struct{ WAFEvasion bool }
 
 func (s *R2SScanner) Name() string { return "r2s" }
 
-func (s *R2SScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *R2SScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	p := path; if s.WAFEvasion { p = core.MutatePath(path) }
 	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, port, p)
@@ -33,7 +34,7 @@ func (s *R2SScanner) Scan(client *http.Client, host string, port int, path strin
 
 	var allS []extractors.Secret; var allT []string
 	var hp []string
-	for _, hn := range hdrSecrets { if v := resp.Headers.Get(hn); v != "" { hp = append(hp, hn+"="+v) } }
+	for _, hn := range hdrSecrets { if v, ok := resp.Headers[hn]; ok && v != "" { hp = append(hp, hn+"="+v) } }
 	if len(hp) > 0 { allS = append(allS, extractors.ExtractSecrets(strings.Join(hp, "\n"), url)...) }
 	body := resp.Body
 	for _, m := range commentRe.FindAllStringSubmatch(body, -1) { if len(m) > 1 { allS = append(allS, extractors.ExtractSecrets(m[1], url)...); td := extractors.ExtractAllTargets(m[1], url); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) } }

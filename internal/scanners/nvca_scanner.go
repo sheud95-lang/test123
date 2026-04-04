@@ -3,9 +3,10 @@ package scanners
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/valyala/fasthttp"
 
 	"reaper/internal/core"
 	"reaper/internal/extractors"
@@ -24,7 +25,7 @@ type NVCAScanner struct{ WAFEvasion bool }
 
 func (s *NVCAScanner) Name() string { return "nvca" }
 
-func (s *NVCAScanner) Scan(client *http.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
+func (s *NVCAScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	var h map[string]string
