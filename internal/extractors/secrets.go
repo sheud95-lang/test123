@@ -79,11 +79,9 @@ func init() {
 
 		// Stripe
 		{"STRIPE_SECRET_KEY", `\bsk_live_[A-Za-z0-9]{24,}\b`, "stripe", 0},
-		{"STRIPE_PUBLISHABLE_KEY", `\bpk_live_[A-Za-z0-9]{24,}\b`, "stripe", 0},
 		{"STRIPE_RESTRICTED_KEY", `\brk_live_[A-Za-z0-9]{24,}\b`, "stripe", 0},
 		{"STRIPE_WEBHOOK_SECRET", `\bwhsec_[A-Za-z0-9]{32,}\b`, "stripe", 0},
 		{"STRIPE_TEST_SECRET", `\bsk_test_[A-Za-z0-9]{24,}\b`, "stripe", 0},
-		{"STRIPE_TEST_PUB", `\bpk_test_[A-Za-z0-9]{24,}\b`, "stripe", 0},
 
 		// PayPal
 		{"PAYPAL_CLIENT_ID", `(?i)PAYPAL_CLIENT_ID\s*[=:]\s*['"]?(A[A-Za-z0-9_-]{60,80})['"]?`, "paypal", 1},
@@ -181,10 +179,6 @@ func init() {
 		// Django
 		{"DJANGO_SECRET_KEY", `(?i)(?:DJANGO_SECRET_KEY|SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9!@#$%^&*()\-_=+]{50,})['"]?`, "django", 1},
 
-		// Database URLs
-		{"DATABASE_URL", `(?i)(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^\s'"<>]{10,}`, "database", 0},
-		{"DB_PASSWORD", `(?i)(?:DB_PASS(?:WORD)?|DATABASE_PASS(?:WORD)?|MYSQL_PASSWORD|POSTGRES_PASSWORD|MYSQL_ROOT_PASSWORD)\s*[=:]\s*['"]?([^\s'"#;]{4,})['"]?`, "database", 1},
-
 		// SMTP
 		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", 0},
 		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)[_\s]*(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", 1},
@@ -211,8 +205,8 @@ func init() {
 var servicePrefixes = []struct {
 	Prefix, Service string
 }{
-	{"sk_live_", "stripe"}, {"pk_live_", "stripe"}, {"rk_live_", "stripe"},
-	{"sk_test_", "stripe"}, {"pk_test_", "stripe"}, {"whsec_", "stripe"},
+	{"sk_live_", "stripe"}, {"rk_live_", "stripe"},
+	{"sk_test_", "stripe"}, {"whsec_", "stripe"},
 	{"sk-ant-", "anthropic"}, {"sk-proj-", "openai"},
 	{"xai-", "grok"}, {"hf_", "huggingface"}, {"r8_", "replicate"},
 	{"ghp_", "github"}, {"gho_", "github"}, {"ghu_", "github"},
@@ -232,10 +226,6 @@ var servicePrefixes = []struct {
 	{"pscale_tkn_", "planetscale"}, {"pscale_pw_", "planetscale"},
 	{"sq0atp-", "square"}, {"sq0csp-", "square"},
 	{"base64:", "laravel"},
-	{"postgres://", "database"}, {"postgresql://", "database"},
-	{"mysql://", "database"}, {"mongodb://", "database"},
-	{"mongodb+srv://", "database"}, {"redis://", "database"},
-	{"rediss://", "database"}, {"amqp://", "database"},
 	{"smtp://", "smtp"}, {"smtps://", "smtp"},
 }
 
@@ -414,7 +404,6 @@ func detectServiceFromKey(key string) string {
 		{[]string{"DISCORD"}, "discord"},
 		{[]string{"TELEGRAM"}, "telegram"},
 		{[]string{"SMTP_", "MAIL_"}, "smtp"},
-		{[]string{"DB_", "DATABASE_", "MYSQL_", "POSTGRES_", "MONGO_", "REDIS_"}, "database"},
 		{[]string{"FIREBASE"}, "firebase"},
 		{[]string{"CLOUDFLARE", "CF_"}, "cloudflare"},
 		{[]string{"HEROKU"}, "heroku"},

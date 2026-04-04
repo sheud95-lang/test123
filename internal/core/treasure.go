@@ -12,6 +12,39 @@ import (
 	"reaper/internal/extractors"
 )
 
+type smtpEntry struct {
+	Source   string
+	Host     string
+	Port     string
+	User     string
+	Password string
+	URL      string
+	Provider string
+}
+
+func (e *smtpEntry) String() string {
+	var parts []string
+	if e.Provider != "" {
+		parts = append(parts, "provider: "+e.Provider)
+	}
+	if e.Host != "" {
+		parts = append(parts, "host: "+e.Host)
+	}
+	if e.Port != "" {
+		parts = append(parts, "port: "+e.Port)
+	}
+	if e.User != "" {
+		parts = append(parts, "user: "+e.User)
+	}
+	if e.Password != "" {
+		parts = append(parts, "password: "+e.Password)
+	}
+	if e.URL != "" {
+		parts = append(parts, "url: "+e.URL)
+	}
+	return strings.Join(parts, " | ")
+}
+
 type TreasureWriter struct {
 	mu             sync.Mutex
 	treasureDir    string
@@ -23,6 +56,7 @@ type TreasureWriter struct {
 	seenEntries    map[string]bool
 	allByService   map[string][]string // aggregated for all.txt
 	validByService map[string][]string // aggregated for all_valid.txt
+	smtpEntries    []*smtpEntry        // accumulated SMTP connection blocks
 }
 
 func NewTreasureWriter(outputDir string) *TreasureWriter {
@@ -43,6 +77,7 @@ func NewTreasureWriter(outputDir string) *TreasureWriter {
 		seenEntries:    make(map[string]bool),
 		allByService:   make(map[string][]string),
 		validByService: make(map[string][]string),
+		smtpEntries:    nil,
 	}
 }
 
@@ -91,86 +126,102 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	}
 
 	svcGroups := make(map[string][]extractors.Secret)
-	smtpData := make(map[string]string)
+	var smtpSecrets []extractors.Secret
 
 	for _, s := range secrets {
 		svc := s.Service
 		if svc == "" {
 			continue
 		}
-		svcGroups[svc] = append(svcGroups[svc], s)
-
 		if svc == "smtp" {
-			lower := strings.ToLower(s.Type)
-			switch {
-			case strings.Contains(lower, "host"):
-				smtpData["host"] = s.Value
-			case strings.Contains(lower, "user"):
-				smtpData["user"] = s.Value
-			case strings.Contains(lower, "pass"):
-				smtpData["password"] = s.Value
-			case strings.Contains(lower, "port"):
-				smtpData["port"] = s.Value
-			case strings.Contains(lower, "url"):
-				smtpData["url"] = s.Value
-			}
-			if _, ok := smtpData["provider"]; !ok {
-				host := smtpData["host"]
-				if host == "" {
-					host = s.Value
-				}
-				hl := strings.ToLower(host)
-				providers := []struct{ sub, name string }{
-					{"sendgrid", "sendgrid"}, {"sg.", "sendgrid"},
-					{"mailgun", "mailgun"}, {"amazonaws", "aws_ses"},
-					{"ses.", "aws_ses"}, {"mailchimp", "mailchimp"},
-					{"mandrill", "mailchimp"}, {"postmark", "postmark"},
-					{"sparkpost", "sparkpost"}, {"gmail", "gmail"},
-					{"google", "gmail"}, {"outlook", "microsoft"},
-					{"office365", "microsoft"}, {"yandex", "yandex"},
-				}
-				for _, p := range providers {
-					if strings.Contains(hl, p.sub) {
-						smtpData["provider"] = p.name
-						break
-					}
-				}
-			}
+			smtpSecrets = append(smtpSecrets, s)
+		} else {
+			svcGroups[svc] = append(svcGroups[svc], s)
 		}
 	}
 
+	// SMTP: combine all fields into one connection entry
+	if len(smtpSecrets) > 0 {
+		entry := &smtpEntry{Source: sourceURL}
+		for _, s := range smtpSecrets {
+			lower := strings.ToLower(s.Type)
+			switch {
+			case strings.Contains(lower, "url"):
+				entry.URL = s.Value
+			case strings.Contains(lower, "host") || strings.Contains(lower, "server"):
+				entry.Host = s.Value
+			case strings.Contains(lower, "user"):
+				entry.User = s.Value
+			case strings.Contains(lower, "pass"):
+				entry.Password = s.Value
+			case strings.Contains(lower, "port"):
+				entry.Port = s.Value
+			}
+		}
+		// Detect provider from host
+		host := entry.Host
+		if host == "" {
+			host = entry.URL
+		}
+		if host != "" {
+			hl := strings.ToLower(host)
+			providers := []struct{ sub, name string }{
+				{"sendgrid", "sendgrid"}, {"sg.", "sendgrid"},
+				{"mailgun", "mailgun"}, {"amazonaws", "aws_ses"},
+				{"ses.", "aws_ses"}, {"mailchimp", "mailchimp"},
+				{"mandrill", "mailchimp"}, {"postmark", "postmark"},
+				{"sparkpost", "sparkpost"}, {"gmail", "gmail"},
+				{"google", "gmail"}, {"outlook", "microsoft"},
+				{"office365", "microsoft"}, {"yandex", "yandex"},
+			}
+			for _, p := range providers {
+				if strings.Contains(hl, p.sub) {
+					entry.Provider = p.name
+					break
+				}
+			}
+		}
+		tw.smtpEntries = append(tw.smtpEntries, entry)
+		tw.stats["smtp"] += len(smtpSecrets)
+
+		// Write to smtp.txt
+		if f := tw.getServiceFile("smtp"); f != nil {
+			header := fmt.Sprintf("\n%s - %s\n", sourceURL, scanType)
+			header += strings.Repeat("-", minInt(len(strings.TrimSpace(header)), 80)) + "\n"
+			f.Write([]byte(header))
+			if entry.Provider != "" {
+				f.Write([]byte(fmt.Sprintf("provider: %s\n", entry.Provider)))
+			}
+			if entry.Host != "" {
+				f.Write([]byte(fmt.Sprintf("host: %s\n", entry.Host)))
+			}
+			if entry.Port != "" {
+				f.Write([]byte(fmt.Sprintf("port: %s\n", entry.Port)))
+			}
+			if entry.User != "" {
+				f.Write([]byte(fmt.Sprintf("user: %s\n", entry.User)))
+			}
+			if entry.Password != "" {
+				f.Write([]byte(fmt.Sprintf("password: %s\n", entry.Password)))
+			}
+			if entry.URL != "" {
+				f.Write([]byte(fmt.Sprintf("url: %s\n", entry.URL)))
+			}
+			f.Write([]byte("\n"))
+		}
+	}
+
+	// Non-SMTP services: write to per-service files
 	for svc, svcSecrets := range svcGroups {
 		f := tw.getServiceFile(svc)
 		if f == nil {
 			continue
 		}
-
 		header := fmt.Sprintf("\n%s - %s\n", sourceURL, scanType)
 		header += strings.Repeat("-", minInt(len(strings.TrimSpace(header)), 80)) + "\n"
 		f.Write([]byte(header))
-
-		if svc == "smtp" {
-			if p, ok := smtpData["provider"]; ok && p != "" {
-				f.Write([]byte(fmt.Sprintf("provider: %s\n", p)))
-			}
-			for _, k := range []string{"host", "port", "user", "password", "url"} {
-				if v, ok := smtpData[k]; ok && v != "" {
-					f.Write([]byte(fmt.Sprintf("smtp_%s: %s\n", k, v)))
-				}
-			}
-		} else if svc == "database" {
-			for _, s := range svcSecrets {
-				provider := detectDBProvider(s.Value)
-				tag := ""
-				if provider != "" {
-					tag = " [" + provider + "]"
-				}
-				f.Write([]byte(fmt.Sprintf("%s%s: %s\n", s.Type, tag, s.Value)))
-			}
-		} else {
-			for _, s := range svcSecrets {
-				f.Write([]byte(fmt.Sprintf("%s: %s\n", s.Type, s.Value)))
-			}
+		for _, s := range svcSecrets {
+			f.Write([]byte(fmt.Sprintf("%s: %s\n", s.Type, s.Value)))
 		}
 		f.Write([]byte("\n"))
 		tw.stats[svc] += len(svcSecrets)
@@ -178,7 +229,7 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 
 	// Accumulate for aggregated all.txt (written in Close)
 	for svc, svcSecrets := range svcGroups {
-		if svc == "smtp" || svc == "auth" {
+		if excludeFromAll[svc] {
 			continue
 		}
 		for _, s := range svcSecrets {
@@ -187,6 +238,8 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	}
 }
 
+var excludeFromAll = map[string]bool{"smtp": true, "auth": true, "jwt": true, "firebase": true, "google": true}
+
 func (tw *TreasureWriter) WriteValid(sourceURL, service, key, detail string) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
@@ -194,7 +247,9 @@ func (tw *TreasureWriter) WriteValid(sourceURL, service, key, detail string) {
 		f.Write([]byte(fmt.Sprintf("[VALID] %s — %s\n  Source: %s\n\n", key, detail, sourceURL)))
 	}
 	// Accumulate for aggregated all_valid.txt (written in Close)
-	tw.validByService[service] = append(tw.validByService[service], key)
+	if !excludeFromAll[service] {
+		tw.validByService[service] = append(tw.validByService[service], key)
+	}
 }
 
 func (tw *TreasureWriter) WriteEnvDump(sourceURL, scanType string, envSecrets []extractors.Secret) {
@@ -214,7 +269,9 @@ func (tw *TreasureWriter) WriteEnvDump(sourceURL, scanType string, envSecrets []
 	}
 	// Accumulate for aggregated all.txt (written in Close)
 	for svc, keys := range svcGroups {
-		tw.allByService[svc] = append(tw.allByService[svc], keys...)
+		if !excludeFromAll[svc] {
+			tw.allByService[svc] = append(tw.allByService[svc], keys...)
+		}
 	}
 }
 
@@ -274,23 +331,6 @@ func (tw *TreasureWriter) Close() {
 	for _, f := range tw.serviceFiles {
 		f.Close()
 	}
-}
-
-func detectDBProvider(value string) string {
-	lower := strings.ToLower(value)
-	switch {
-	case strings.HasPrefix(lower, "postgres"):
-		return "postgresql"
-	case strings.HasPrefix(lower, "mysql"):
-		return "mysql"
-	case strings.HasPrefix(lower, "mongodb"):
-		return "mongodb"
-	case strings.HasPrefix(lower, "redis"):
-		return "redis"
-	case strings.HasPrefix(lower, "amqp"):
-		return "rabbitmq"
-	}
-	return ""
 }
 
 func minInt(a, b int) int {

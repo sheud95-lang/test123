@@ -96,68 +96,97 @@ func (se *ScannerEngine) Stop() { atomic.StoreInt32(&se.stop, 1) }
 
 func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) != 0 }
 
+// Scanners that need the full wordlist (every path).
+// All others get only a small set of entry-point paths.
+var fullPathScanners = map[string]bool{"path": true, "r2s": true}
+
+// Entry-point paths for scanners that do their own internal path discovery.
+var entryPaths = []string{"/", "/index.html", "/index.php", "/home", "/app"}
+
+// pathsForScanner returns the path list a scanner should actually iterate.
+// "path" and "r2s" get the full wordlist.
+// "git", "uafr", "nvca", "js", "ajs" only need a few entry points —
+// they discover their own sub-paths internally.
+func pathsForScanner(name string, allPaths []string) []string {
+	if fullPathScanners[name] {
+		return allPaths
+	}
+	return entryPaths
+}
+
 func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGenerator) {
-	for _, path := range paths {
+	// L4 banner grab: once per target (not per path/scanner)
+	if (se.Config.ScanMode == "L4" || se.Config.ScanMode == "L4+L7") && target.IsIP {
+		banner := GrabBanner(target.Host, target.Port, se.Config.ConnectTimeout)
+		if banner != "" {
+			secrets := extractors.ExtractSecrets(banner, fmt.Sprintf("l4://%s:%d", target.Host, target.Port))
+			if len(secrets) > 0 {
+				r := ScanResult{
+					URL:     fmt.Sprintf("l4://%s:%d", target.Host, target.Port),
+					Scanner: "l4_banner", Secrets: secrets,
+				}
+				se.Results.AddResult(r)
+				if se.Treasure != nil {
+					se.Treasure.WriteFinding(r.URL, r.Scanner, secrets)
+				}
+			}
+		}
+	}
+
+	if se.Config.ScanMode != "L7" && se.Config.ScanMode != "L4+L7" {
+		return
+	}
+
+	scheme := "https"
+	if target.Port == 80 || target.Port == 8080 {
+		scheme = "http"
+	}
+
+	// Pre-probe: quick check if target is alive before committing to all paths
+	probeURL := fmt.Sprintf("%s://%s:%d/", scheme, target.Host, target.Port)
+	probe := utils.Fetch(se.client, probeURL, "HEAD", nil, 0, 0)
+	if probe == nil {
+		return // target dead, skip entirely
+	}
+
+	for sName, scanner := range se.scanners {
 		if se.isStopped() {
 			return
 		}
-
-		// L4 banner grab: once per target+path, not per scanner
-		if (se.Config.ScanMode == "L4" || se.Config.ScanMode == "L4+L7") && target.IsIP {
-			banner := GrabBanner(target.Host, target.Port, se.Config.ConnectTimeout)
-			if banner != "" {
-				secrets := extractors.ExtractSecrets(banner, fmt.Sprintf("l4://%s:%d", target.Host, target.Port))
-				if len(secrets) > 0 {
-					r := ScanResult{
-						URL:     fmt.Sprintf("l4://%s:%d%s", target.Host, target.Port, path),
-						Scanner: "l4_banner", Secrets: secrets,
-					}
-					se.Results.AddResult(r)
-					if se.Treasure != nil {
-						se.Treasure.WriteFinding(r.URL, r.Scanner, secrets)
-					}
-				}
+		enabled := false
+		for _, en := range se.Config.EnabledScanners {
+			if en == sName {
+				enabled = true
+				break
 			}
 		}
+		if !enabled {
+			continue
+		}
 
-		for sName, scanner := range se.scanners {
+		scanPaths := pathsForScanner(sName, paths)
+		for _, path := range scanPaths {
 			if se.isStopped() {
 				return
 			}
-			enabled := false
-			for _, en := range se.Config.EnabledScanners {
-				if en == sName {
-					enabled = true
-					break
-				}
-			}
-			if !enabled {
-				continue
-			}
 			se.rl.Acquire()
 
-			if se.Config.ScanMode == "L7" || se.Config.ScanMode == "L4+L7" {
-				scheme := "https"
-				if target.Port == 80 || target.Port == 8080 {
-					scheme = "http"
-				}
-				result := scanner.Scan(se.client, target.Host, target.Port, path, target.IsIP, scheme)
-				if result != nil {
-					added := se.Results.AddResult(*result)
-					if added {
-						if tg != nil && len(result.NewTargets) > 0 {
-							tg.AddFromParsedContent(strings.Join(result.NewTargets, "\n"), se.Config.Ports)
-						}
-						if se.Treasure != nil && len(result.Secrets) > 0 {
-							se.Treasure.WriteFinding(result.URL, result.Scanner, result.Secrets)
-							envSecrets := extractors.ExtractEnvPairs(collectRawLines(result.Secrets), result.URL)
-							if len(envSecrets) > 0 {
-								se.Treasure.WriteEnvDump(result.URL, result.Scanner, envSecrets)
-							}
-						}
-						log.Printf("[%s] %s -> %d secrets, %d targets",
-							sName, result.URL, len(result.Secrets), len(result.NewTargets))
+			result := scanner.Scan(se.client, target.Host, target.Port, path, target.IsIP, scheme)
+			if result != nil {
+				added := se.Results.AddResult(*result)
+				if added {
+					if tg != nil && len(result.NewTargets) > 0 {
+						tg.AddFromParsedContent(strings.Join(result.NewTargets, "\n"), se.Config.Ports)
 					}
+					if se.Treasure != nil && len(result.Secrets) > 0 {
+						se.Treasure.WriteFinding(result.URL, result.Scanner, result.Secrets)
+						envSecrets := extractors.ExtractEnvPairs(collectRawLines(result.Secrets), result.URL)
+						if len(envSecrets) > 0 {
+							se.Treasure.WriteEnvDump(result.URL, result.Scanner, envSecrets)
+						}
+					}
+					log.Printf("[%s] %s -> %d secrets, %d targets",
+						sName, result.URL, len(result.Secrets), len(result.NewTargets))
 				}
 			}
 
@@ -188,7 +217,18 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	sem := make(chan struct{}, se.Config.MaxConcurrentReqs)
 	var wg sync.WaitGroup
 
-	log.Printf("Scan: %d targets x %d paths x %d scanners", len(targets), len(paths), len(se.Config.EnabledScanners))
+	// Estimate: path+r2s get full wordlist, others get entryPaths only
+	fullCount, entryCount := 0, 0
+	for _, en := range se.Config.EnabledScanners {
+		if fullPathScanners[en] {
+			fullCount++
+		} else {
+			entryCount++
+		}
+	}
+	estReqs := len(targets) * (fullCount*len(paths) + entryCount*len(entryPaths))
+	log.Printf("Scan: %d targets | %d paths | %d scanners (est ~%d reqs, %d full-path + %d entry-only)",
+		len(targets), len(paths), len(se.Config.EnabledScanners), estReqs, fullCount, entryCount)
 
 	batchSize := 500
 	for i := 0; i < len(targets); i += batchSize {
