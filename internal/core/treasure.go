@@ -75,8 +75,10 @@ type TreasureWriter struct {
 	serviceFiles   map[string]*bufferedFile
 	stats          map[string]int
 	seenEntries    map[string]bool
-	allByService   map[string][]string // aggregated for all.txt
+	allByService   map[string][]string    // aggregated for all.txt
+	allSeen        map[string]map[string]bool // dedup: service -> set of values
 	validByService map[string][]string // aggregated for all_valid.txt
+	validSeen      map[string]map[string]bool // dedup
 	smtpEntries    []*smtpEntry        // accumulated SMTP connection blocks
 	stopFlush      chan struct{}
 }
@@ -98,7 +100,9 @@ func NewTreasureWriter(outputDir string) *TreasureWriter {
 		stats:          make(map[string]int),
 		seenEntries:    make(map[string]bool),
 		allByService:   make(map[string][]string),
+		allSeen:        make(map[string]map[string]bool),
 		validByService: make(map[string][]string),
+		validSeen:      make(map[string]map[string]bool),
 		smtpEntries:    nil,
 		stopFlush:      make(chan struct{}),
 	}
@@ -267,13 +271,13 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		tw.stats[svc] += len(svcSecrets)
 	}
 
-	// Accumulate for aggregated all.txt (written in Close)
+	// Accumulate for aggregated all.txt (written in Close) — deduplicated
 	for svc, svcSecrets := range svcGroups {
 		if excludeFromAll[svc] {
 			continue
 		}
 		for _, s := range svcSecrets {
-			tw.allByService[svc] = append(tw.allByService[svc], s.Value)
+			tw.addToAll(svc, s.Value)
 		}
 	}
 }
@@ -286,9 +290,9 @@ func (tw *TreasureWriter) WriteValid(sourceURL, service, key, detail string) {
 	if f := tw.getServiceFile(service); f != nil {
 		f.WriteString(fmt.Sprintf("[VALID] %s — %s\n  Source: %s\n\n", key, detail, sourceURL))
 	}
-	// Accumulate for aggregated all_valid.txt (written in Close)
+	// Accumulate for aggregated all_valid.txt (written in Close) — deduplicated
 	if !excludeFromAll[service] {
-		tw.validByService[service] = append(tw.validByService[service], key)
+		tw.addToValid(service, key)
 	}
 }
 
@@ -307,10 +311,12 @@ func (tw *TreasureWriter) WriteEnvDump(sourceURL, scanType string, envSecrets []
 		}
 		svcGroups[svc] = append(svcGroups[svc], display)
 	}
-	// Accumulate for aggregated all.txt (written in Close)
+	// Accumulate for aggregated all.txt (written in Close) — deduplicated
 	for svc, keys := range svcGroups {
 		if !excludeFromAll[svc] {
-			tw.allByService[svc] = append(tw.allByService[svc], keys...)
+			for _, k := range keys {
+				tw.addToAll(svc, k)
+			}
 		}
 	}
 }
@@ -384,6 +390,26 @@ func (tw *TreasureWriter) Close() {
 	}
 	for _, bf := range tw.serviceFiles {
 		bf.Close()
+	}
+}
+
+func (tw *TreasureWriter) addToAll(svc, value string) {
+	if tw.allSeen[svc] == nil {
+		tw.allSeen[svc] = make(map[string]bool)
+	}
+	if !tw.allSeen[svc][value] {
+		tw.allSeen[svc][value] = true
+		tw.allByService[svc] = append(tw.allByService[svc], value)
+	}
+}
+
+func (tw *TreasureWriter) addToValid(svc, value string) {
+	if tw.validSeen[svc] == nil {
+		tw.validSeen[svc] = make(map[string]bool)
+	}
+	if !tw.validSeen[svc][value] {
+		tw.validSeen[svc][value] = true
+		tw.validByService[svc] = append(tw.validByService[svc], value)
 	}
 }
 

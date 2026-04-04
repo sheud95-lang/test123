@@ -55,7 +55,8 @@ func (rs *ResultStore) AddResult(r ScanResult) bool {
 	if len(r.Secrets) == 0 && len(r.NewTargets) == 0 {
 		return false
 	}
-	if rs.seenURLs[r.URL] {
+	urlKey := r.Scanner + "|" + r.URL
+	if rs.seenURLs[urlKey] {
 		return false
 	}
 	var newS []extractors.Secret
@@ -71,7 +72,7 @@ func (rs *ResultStore) AddResult(r ScanResult) bool {
 	}
 	r.Secrets = newS
 	rs.results = append(rs.results, r)
-	rs.seenURLs[r.URL] = true
+	rs.seenURLs[urlKey] = true
 	rs.TotalSecrets += len(newS)
 	rs.TotalNewTargets += len(r.NewTargets)
 	if len(newS) > 0 {

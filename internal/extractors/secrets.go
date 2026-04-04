@@ -168,8 +168,8 @@ func init() {
 		// Supabase
 		{"SUPABASE_KEY", `(?i)(?:SUPABASE_KEY|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY)\s*[=:]\s*['"]?(eyJ[A-Za-z0-9_-]{100,})['"]?`, "supabase", "supabase", 1},
 
-		// Private Key
-		{"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", "private key", 0},
+		// Private Key — REMOVED: too many false positives from API docs, swagger, etc.
+		// {"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", "private key", 0},
 
 		// JWT
 		{"JWT_SECRET", `(?i)(?:JWT_SECRET|JWT_KEY|JWT_PRIVATE_KEY|JWT_SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9_+/=.\-]{16,})['"]?`, "jwt", "jwt_", 1},
@@ -251,35 +251,56 @@ var fpWords = []string{
 	"xxx", "yyy", "zzz", "todo", "fixme", "insert", "replace",
 	"0000000000", "1111111111", "abcdef", "123456",
 	"undefined", "null", "none", "sample", "default",
+	"your_", "your-", "enter_", "enter-", "put_", "put-",
+}
+
+// Exact values that are always false positives (lowercase)
+var fpExact = map[string]bool{
+	"null": true, "true": true, "false": true,
+	"none": true, "undefined": true, "empty": true,
+	"mailpit": true, "localhost": true, "127.0.0.1": true,
+	"smtp": true, "tls": true, "ssl": true, "starttls": true,
 }
 
 func isFalsePositive(value string) bool {
 	if len(value) < 6 {
 		return true
 	}
-	lower := strings.ToLower(strings.Trim(value, "\"' "))
+	trimmed := strings.Trim(value, "\"' ")
+	lower := strings.ToLower(trimmed)
+
+	// Exact match FP
+	if fpExact[lower] {
+		return true
+	}
+
 	for _, fp := range fpWords {
 		if strings.Contains(lower, fp) {
 			return true
 		}
 	}
 	unique := make(map[rune]bool)
-	for _, r := range value {
+	for _, r := range trimmed {
 		unique[r] = true
 	}
 	if len(unique) < 3 {
 		return true
 	}
-	if strings.HasPrefix(value, "$") || strings.HasPrefix(value, "%") ||
-		strings.Contains(value, "${") || strings.Contains(value, "{{") {
+	if strings.HasPrefix(trimmed, "$") || strings.HasPrefix(trimmed, "%") ||
+		strings.Contains(trimmed, "${") || strings.Contains(trimmed, "{{") {
 		return true
 	}
 	return false
 }
 
-var pemEndRe = regexp.MustCompile(`-----END [A-Z ]*PRIVATE KEY-----`)
-
 func ExtractSecrets(text, sourceURL string) []Secret {
+	// Skip .example / .sample files — they contain template values
+	srcLower := strings.ToLower(sourceURL)
+	if strings.Contains(srcLower, ".example") || strings.Contains(srcLower, ".sample") ||
+		strings.Contains(srcLower, ".dist") || strings.Contains(srcLower, ".template") {
+		return nil
+	}
+
 	var results []Secret
 	seen := make(map[string]bool)
 	lines := strings.Split(text, "\n")
@@ -308,23 +329,6 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 				}
 				if value == "" || isFalsePositive(value) {
 					continue
-				}
-
-				// For PRIVATE_KEY: capture full PEM block across multiple lines
-				if sp.Name == "PRIVATE_KEY" {
-					var pemLines []string
-					pemLines = append(pemLines, strings.TrimSpace(line))
-					for j := lineNo + 1; j < len(lines) && j < lineNo+80; j++ {
-						trimmed := strings.TrimSpace(lines[j])
-						if trimmed == "" {
-							continue
-						}
-						pemLines = append(pemLines, trimmed)
-						if pemEndRe.MatchString(trimmed) {
-							break
-						}
-					}
-					value = strings.Join(pemLines, "\n")
 				}
 
 				dedupKey := sp.Name + ":" + value
@@ -368,7 +372,21 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 
 var envRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$`)
 
+// envEmptyValues are values that mean "not configured"
+var envEmptyValues = map[string]bool{
+	"": true, "null": true, "nil": true, "none": true,
+	"false": true, "0": true, "undefined": true,
+	"changeme": true, "secret": true, "password": true,
+}
+
 func ExtractEnvPairs(text, sourceURL string) []Secret {
+	// Skip .example / .sample env files — they contain template values
+	srcLower := strings.ToLower(sourceURL)
+	if strings.Contains(srcLower, ".example") || strings.Contains(srcLower, ".sample") ||
+		strings.Contains(srcLower, ".dist") || strings.Contains(srcLower, ".template") {
+		return nil
+	}
+
 	var results []Secret
 	for lineNo, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -381,7 +399,7 @@ func ExtractEnvPairs(text, sourceURL string) []Secret {
 		}
 		key := m[1]
 		val := strings.Trim(strings.TrimSpace(m[2]), "\"'")
-		if val == "" {
+		if val == "" || envEmptyValues[strings.ToLower(val)] {
 			continue
 		}
 		service := DetectServiceFromValue(val)
