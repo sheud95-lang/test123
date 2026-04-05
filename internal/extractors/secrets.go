@@ -210,6 +210,9 @@ func init() {
 		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)[_\s]*(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
 		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)[_\s]*PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
 
+		// Generic secret (catch-all for SECRET=xxx, TOKEN=xxx, PASSWORD=xxx, API_KEY=xxx)
+		{"GENERIC_SECRET", `(?i)(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|AUTH_TOKEN)\s*[=:]\s*['"]?([^\s'"]{8,})['"]?`, "", "", 1},
+
 		// Basic Auth / Bearer
 		{"BASIC_AUTH", `(?i)Basic\s+([A-Za-z0-9+/]{20,}=*)`, "auth", "basic ", 1},
 		{"BEARER_TOKEN", `(?i)Bearer\s+([A-Za-z0-9_\-.]{20,}={0,2})`, "auth", "bearer ", 1},
@@ -275,7 +278,6 @@ var fpWords = []string{
 	"example", "test", "dummy", "placeholder", "changeme",
 	"xxx", "yyy", "zzz", "todo", "fixme", "insert", "replace",
 	"0000000000", "1111111111", "abcdef", "123456",
-	"undefined", "null", "none", "sample", "default",
 	"your_", "your-", "enter_", "enter-", "put_", "put-",
 }
 

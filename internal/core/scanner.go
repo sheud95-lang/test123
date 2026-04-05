@@ -217,16 +217,9 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		scheme = "http"
 	}
 
-	// Pre-probe: quick check if target is alive
-	probeURL := fmt.Sprintf("%s://%s:%d/", scheme, target.Host, target.Port)
-	probe := utils.Fetch(se.client, probeURL, "HEAD", nil, 0, 0)
-	if probe == nil {
-		// Some servers reject HEAD, try GET
-		probe = utils.Fetch(se.client, probeURL, "GET", nil, 0, 0)
-		if probe == nil {
-			return
-		}
-	}
+	// No pre-probe — let individual scanners handle failures.
+	// Pre-probing "/" killed entire targets when root path was unreachable,
+	// even though /.env, /api, /.git/config etc might still be accessible.
 
 	// Build per-scanner path lists and find enabled scanners
 	type scanJob struct {
