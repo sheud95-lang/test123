@@ -25,7 +25,7 @@ func (s *PathScanner) Scan(client *fasthttp.Client, host string, port int, path 
 		if !isIP { ch = host }
 		h = core.GenerateHeaders(ch)
 	}
-	resp := utils.Fetch(client, url, "GET", h, 2, 500_000_000)
+	resp := utils.Fetch(client, url, "GET", h, 2, 150_000_000)
 	if resp == nil || resp.Status == 404 || resp.Status == 403 || resp.Status == 503 || resp.Status == 502 {
 		return nil
 	}

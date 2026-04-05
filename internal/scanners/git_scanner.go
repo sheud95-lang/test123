@@ -22,7 +22,6 @@ var (
 		"/.git/logs/HEAD", "/.git/FETCH_HEAD", "/.git/ORIG_HEAD",
 		"/.git/refs/heads/master", "/.git/refs/heads/main", "/.git/refs/heads/develop",
 		"/.git/description", "/.git/packed-refs",
-		"/.git/objects/info/packs", // pack index discovery
 	}
 	gitMarkers  = []string{"[core]", "[remote", "[branch", "repositoryformatversion"}
 	sha1Re      = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
@@ -40,7 +39,7 @@ func (s *GitScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
 	var allS []extractors.Secret; var allT []string; exposed := false
 	for _, gp := range gitPaths2 {
-		u := base + gp; r := utils.Fetch(client, u, "GET", h, 2, 500_000_000)
+		u := base + gp; r := utils.Fetch(client, u, "GET", h, 2, 150_000_000)
 		if r == nil || r.Status != 200 { continue }
 		body := r.Body
 		if strings.HasSuffix(gp, "/config") { for _, mk := range gitMarkers { if strings.Contains(body, mk) { exposed = true; allS = append(allS, extractors.ExtractSecrets(body, u)...); td := extractors.ExtractAllTargets(body, u); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...); break } } } else if strings.HasSuffix(gp, "/HEAD") { t := strings.TrimSpace(body); if strings.HasPrefix(t, "ref:") || sha1Re.MatchString(t) { exposed = true } } else { if sha1Re.MatchString(body) { exposed = true }; allS = append(allS, extractors.ExtractSecrets(body, u)...) }
@@ -48,7 +47,7 @@ func (s *GitScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	if !exposed { return nil }
 	shas := make(map[string]bool)
 	for _, sp := range []string{"/.git/logs/HEAD", "/.git/packed-refs", "/.git/refs/heads/master", "/.git/refs/heads/main", "/.git/FETCH_HEAD", "/.git/ORIG_HEAD"} {
-		r := utils.Fetch(client, base+sp, "GET", h, 2, 500_000_000)
+		r := utils.Fetch(client, base+sp, "GET", h, 2, 150_000_000)
 		if r != nil && r.Status == 200 { for _, sha := range sha1Re.FindAllString(r.Body, -1) { shas[sha] = true } }
 	}
 	fetched := 0

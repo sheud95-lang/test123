@@ -23,7 +23,7 @@ func (s *R2SScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, port, p)
 	var h map[string]string
 	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
-	resp := utils.Fetch(client, url, "GET", h, 2, 500_000_000)
+	resp := utils.Fetch(client, url, "GET", h, 2, 150_000_000)
 	if resp == nil { return nil }
 
 	var allS []extractors.Secret; var allT []string

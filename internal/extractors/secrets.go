@@ -183,11 +183,12 @@ func init() {
 		// Linear
 		{"LINEAR_API_KEY", `\blin_api_[A-Za-z0-9]{36,}\b`, "linear", "lin_api_", 0},
 
-		// Airtable
-		{"AIRTABLE_API_KEY", `\bkey[A-Za-z0-9]{14}\b`, "airtable", "key", 0},
+		// Airtable — require mixed case (real keys: keyXXXXXXXXXXXXXX with mixed alphanumeric)
+		{"AIRTABLE_API_KEY", `(?i)(?:AIRTABLE_API_KEY|AIRTABLE_KEY)\s*[=:]\s*['"]?(key[A-Za-z0-9]{14})['"]?`, "airtable", "airtable", 1},
 
-		// Notion
-		{"NOTION_TOKEN", `\bsecret_[A-Za-z0-9]{43}\b`, "notion", "secret_", 0},
+		// Notion — use ntn_ prefix (new format) or require env var context
+		{"NOTION_TOKEN", `\bntn_[A-Za-z0-9]{40,}\b`, "notion", "ntn_", 0},
+		{"NOTION_TOKEN_V2", `(?i)(?:NOTION_TOKEN|NOTION_API_KEY|NOTION_SECRET)\s*[=:]\s*['"]?(secret_[A-Za-z0-9]{43})['"]?`, "notion", "notion", 1},
 
 		// Coinbase
 		{"COINBASE_API_KEY", `(?i)(?:COINBASE_API_KEY|CB_ACCESS_KEY)\s*[=:]\s*['"]?([A-Za-z0-9]{16,})['"]?`, "coinbase", "coinbase", 1},
@@ -253,7 +254,7 @@ var servicePrefixes = []struct {
 	{"smtp://", "smtp"}, {"smtps://", "smtp"},
 	{"dp.pt.", "doppler"}, {"dp.sa.", "doppler"}, {"dp.ct.", "doppler"},
 	{"lin_api_", "linear"},
-	{"secret_", "notion"},
+	{"ntn_", "notion"},
 }
 
 func DetectServiceFromValue(value string) string {
@@ -293,6 +294,12 @@ var privateKeyFPContext = []string{
 	"readme", "how-to", "guide", "demo", "placeholder",
 }
 
+// URL paths that indicate test/fixture files
+var privateKeyFPPaths = []string{
+	"/fixtures/", "/testdata/", "/mock/", "/test/", "/spec/",
+	"test.pem", "example.pem", "fake.pem", "dummy.pem",
+}
+
 func isPrivateKeyFP(value string, context string) bool {
 	ctxLower := strings.ToLower(context)
 	for _, w := range privateKeyFPContext {
@@ -301,6 +308,31 @@ func isPrivateKeyFP(value string, context string) bool {
 		}
 	}
 	return false
+}
+
+func isPrivateKeyFPByURL(sourceURL string) bool {
+	urlLower := strings.ToLower(sourceURL)
+	for _, p := range privateKeyFPPaths {
+		if strings.Contains(urlLower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateKeySingleLine checks if the key marker is just a one-line reference
+// (documentation) vs a real multiline PEM block
+func isPrivateKeySingleLine(lines []string, lineNo int) bool {
+	// Check if next line has base64 content (real key body)
+	if lineNo+1 < len(lines) {
+		nextLine := strings.TrimSpace(lines[lineNo+1])
+		// Real PEM keys have base64-encoded data on the next line
+		if len(nextLine) > 20 && !strings.HasPrefix(nextLine, "<") && !strings.HasPrefix(nextLine, "//") &&
+			!strings.HasPrefix(nextLine, "#") && !strings.HasPrefix(nextLine, "*") {
+			return false // likely real key
+		}
+	}
+	return true // single-line marker, likely docs
 }
 
 func isFalsePositive(value string) bool {
@@ -372,9 +404,13 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 					continue
 				}
 
-				// Extra FP check for private keys: skip if context suggests docs/example
+				// Extra FP checks for private keys
 				if sp.Name == "PRIVATE_KEY" {
-					// Build context from surrounding lines
+					// 1. Skip if URL path indicates test/fixture file
+					if isPrivateKeyFPByURL(sourceURL) {
+						continue
+					}
+					// 2. Skip if surrounding lines suggest documentation/example
 					ctxLines := value
 					for d := -3; d <= 3; d++ {
 						idx := lineNo + d
@@ -383,6 +419,10 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 						}
 					}
 					if isPrivateKeyFP(value, ctxLines) {
+						continue
+					}
+					// 3. Skip single-line markers (docs mention -----BEGIN PRIVATE KEY----- without actual key body)
+					if isPrivateKeySingleLine(lines, lineNo) {
 						continue
 					}
 				}

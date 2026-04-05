@@ -76,8 +76,18 @@ func GenerateHeaders(customHost string) map[string]string {
 }
 
 func MutatePath(path string) string {
-	switch rand.Intn(6) {
+	switch rand.Intn(7) {
 	case 0:
+		// Single URL-encode a random letter
+		for i, r := range path {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				if rand.Float64() < 0.15 {
+					return path[:i] + url.QueryEscape(string(r)) + path[i+1:]
+				}
+			}
+		}
+	case 6:
+		// Double URL-encode for WAF bypass
 		for i, r := range path {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 				if rand.Float64() < 0.15 {

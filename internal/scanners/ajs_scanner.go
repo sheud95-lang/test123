@@ -30,20 +30,20 @@ func (s *AJSScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	page := base + path
 	var h map[string]string
 	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
-	resp := utils.Fetch(client, page, "GET", h, 2, 500_000_000)
+	resp := utils.Fetch(client, page, "GET", h, 2, 150_000_000)
 	if resp == nil || resp.Status >= 400 { return nil }
 	body := resp.Body
 	jsURLs := make(map[string]bool)
 	for _, m := range sSrcRe.FindAllStringSubmatch(body, -1) { if len(m) > 1 { r := m[1]; if strings.HasPrefix(r, "http") { jsURLs[r] = true } else { jsURLs[base+"/"+strings.TrimLeft(r, "/") ] = true } } }
 	jsCont := body; cnt := 0
-	for u := range jsURLs { if cnt >= 30 { break }; jr := utils.Fetch(client, u, "GET", h, 2, 500_000_000); if jr != nil && jr.Status == 200 { jsCont += "\n" + jr.Body }; cnt++ }
+	for u := range jsURLs { if cnt >= 30 { break }; jr := utils.Fetch(client, u, "GET", h, 2, 150_000_000); if jr != nil && jr.Status == 200 { jsCont += "\n" + jr.Body }; cnt++ }
 	eps := make(map[string]bool)
 	for _, pat := range []*regexp.Regexp{apiEPRe, fetchRe, cfgRe} { for _, m := range pat.FindAllStringSubmatch(jsCont, -1) { if len(m) > 1 { eps[m[1]] = true } } }
 	var allS []extractors.Secret; var allT []string; pr := 0
 	for ep := range eps {
 		if pr >= mx { break }
 		u := ep; if !strings.HasPrefix(ep, "http") { if strings.HasPrefix(ep, "/") { u = base + ep } else { u = base + "/" + ep } }
-		r := utils.Fetch(client, u, "GET", h, 2, 500_000_000); pr++
+		r := utils.Fetch(client, u, "GET", h, 2, 150_000_000); pr++
 		if r == nil || r.Status == 404 || r.Status == 403 || r.Status == 502 || r.Status == 503 { continue }
 		allS = append(allS, extractors.ExtractSecrets(r.Body, u)...); td := extractors.ExtractAllTargets(r.Body, u); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...)
 	}

@@ -34,7 +34,7 @@ func (s *NVCAScanner) Scan(client *fasthttp.Client, host string, port int, path 
 	var allS []extractors.Secret; var allT []string; var pResp *utils.HTTPResponse
 	for _, sp := range append([]string{path}, errPaths...) {
 		p := sp; if s.WAFEvasion { p = core.MutatePath(sp) }
-		resp := utils.Fetch(client, base+p, "GET", h, 2, 500_000_000)
+		resp := utils.Fetch(client, base+p, "GET", h, 2, 150_000_000)
 		if resp == nil { continue }
 		if pResp == nil { pResp = resp }
 		body := resp.Body
@@ -43,7 +43,7 @@ func (s *NVCAScanner) Scan(client *fasthttp.Client, host string, port int, path 
 		for _, m := range srcMapRe.FindAllStringSubmatch(body, -1) {
 			if len(m) > 1 && !strings.HasPrefix(m[1], "data:") {
 				mu := m[1]; if !strings.HasPrefix(mu, "http") { mu = base + "/" + strings.TrimLeft(mu, "/") }
-				mr := utils.Fetch(client, mu, "GET", h, 2, 500_000_000)
+				mr := utils.Fetch(client, mu, "GET", h, 2, 150_000_000)
 				if mr != nil && mr.Status == 200 {
 					// Parse sourcesContent from source map JSON for embedded source code
 					var srcMap struct {

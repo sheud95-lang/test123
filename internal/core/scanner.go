@@ -163,26 +163,30 @@ func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) !=
 // Scanners that need the full wordlist (every path).
 var fullPathScanners = map[string]bool{"path": true, "r2s": true}
 
-// Strategic entry points for discovery scanners.
-// These hit different app sections that may have different JS, hidden inputs, backup files.
-var entryPaths = []string{
-	"/",
-	"/admin",
-	"/api",
-	"/app",
-	"/dashboard",
-	"/login",
-	"/wp-admin",
-	"/config.php",
-	"/index.php",
-	"/application.yml",
+// Per-scanner entry paths — tailored to what each scanner actually needs.
+// HTML pages for JS/form scanners; "/" only for scanners with their own internal path lists.
+var scannerEntryPaths = map[string][]string{
+	// js, ajs, nvca: need HTML pages to find <script>, <form>, API endpoints
+	"js":   {"/", "/admin", "/api", "/app", "/dashboard", "/login", "/wp-admin"},
+	"ajs":  {"/", "/admin", "/api", "/app", "/dashboard", "/login", "/wp-admin"},
+	"nvca": {"/", "/admin", "/api", "/app", "/dashboard", "/login", "/wp-admin"},
+	// uafr: has its own sensFiles/travPayloads lists, just needs a base path
+	"uafr": {"/", "/admin", "/api"},
+	// git: has its own gitPaths2 list, just needs to be triggered once
+	"git": {"/"},
 }
+
+// Default entry paths for scanners not in the map above
+var defaultEntryPaths = []string{"/", "/admin", "/api", "/app", "/dashboard", "/login"}
 
 func pathsForScanner(name string, allPaths []string) []string {
 	if fullPathScanners[name] {
 		return allPaths
 	}
-	return entryPaths
+	if paths, ok := scannerEntryPaths[name]; ok {
+		return paths
+	}
+	return defaultEntryPaths
 }
 
 func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGenerator) {
@@ -224,15 +228,17 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		}
 	}
 
+	// Build per-scanner path lists and find enabled scanners
+	type scanJob struct {
+		name    string
+		scanner Scanner
+		paths   []string
+	}
+	var jobs []scanJob
 	for _, entry := range se.scanners {
-		sName := entry.name
-		scanner := entry.scanner
-		if se.isStopped() {
-			return
-		}
 		enabled := false
 		for _, en := range se.Config.EnabledScanners {
-			if en == sName {
+			if en == entry.name {
 				enabled = true
 				break
 			}
@@ -240,18 +246,37 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		if !enabled {
 			continue
 		}
+		jobs = append(jobs, scanJob{
+			name:    entry.name,
+			scanner: entry.scanner,
+			paths:   pathsForScanner(entry.name, paths),
+		})
+	}
 
-		scanPaths := pathsForScanner(sName, paths)
-		for _, path := range scanPaths {
+	// Interleave by path index: at each index, ALL scanners run before moving to next path.
+	// This ensures fair coverage — even if scan is interrupted, all scanners got some work.
+	maxPathLen := 0
+	for _, j := range jobs {
+		if len(j.paths) > maxPathLen {
+			maxPathLen = len(j.paths)
+		}
+	}
+
+	for pathIdx := 0; pathIdx < maxPathLen; pathIdx++ {
+		for _, j := range jobs {
 			if se.isStopped() {
 				return
 			}
+			if pathIdx >= len(j.paths) {
+				continue // this scanner has fewer paths (entry-only), skip
+			}
+			path := j.paths[pathIdx]
 			se.rl.Acquire()
 
-			if cnt := se.scanCounts[sName]; cnt != nil {
+			if cnt := se.scanCounts[j.name]; cnt != nil {
 				atomic.AddInt64(cnt, 1)
 			}
-			result := scanner.Scan(se.client, target.Host, target.Port, path, target.IsIP, scheme)
+			result := j.scanner.Scan(se.client, target.Host, target.Port, path, target.IsIP, scheme)
 			if result != nil {
 				added := se.Results.AddResult(*result)
 				if added {
@@ -267,15 +292,15 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 					}
 					if se.Config.Verbose {
 						log.Printf("[%s] %s -> %d secrets, %d targets",
-							sName, result.URL, len(result.Secrets), len(result.NewTargets))
+							j.name, result.URL, len(result.Secrets), len(result.NewTargets))
 					}
 				}
 			}
 
 			atomic.AddInt64(&se.count, 1)
 			if se.Config.DelayJitterMaxMs > 0 {
-				j := time.Duration(rand.Intn(se.Config.DelayJitterMaxMs-se.Config.DelayJitterMinMs)+se.Config.DelayJitterMinMs) * time.Millisecond
-				time.Sleep(j)
+				jitter := time.Duration(rand.Intn(se.Config.DelayJitterMaxMs-se.Config.DelayJitterMinMs)+se.Config.DelayJitterMinMs) * time.Millisecond
+				time.Sleep(jitter)
 			}
 		}
 	}
@@ -306,14 +331,16 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 
 	// Estimate requests
 	fullCount, entryCount := 0, 0
+	entryPathTotal := 0
 	for _, en := range se.Config.EnabledScanners {
 		if fullPathScanners[en] {
 			fullCount++
 		} else {
 			entryCount++
+			entryPathTotal += len(pathsForScanner(en, nil))
 		}
 	}
-	estReqs := len(targets) * (fullCount*len(paths) + entryCount*len(entryPaths))
+	estReqs := len(targets) * (fullCount*len(paths) + entryPathTotal)
 	log.Printf("Scan: %d targets | %d paths | %d scanners (est ~%d reqs, %d full-path + %d entry-only)",
 		len(targets), len(paths), len(se.Config.EnabledScanners), estReqs, fullCount, entryCount)
 

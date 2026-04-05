@@ -44,7 +44,7 @@ func (s *JSScanner) Scan(client *fasthttp.Client, host string, port int, path st
 	page := base + path
 	var h map[string]string
 	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
-	resp := utils.Fetch(client, page, "GET", h, 2, 500_000_000)
+	resp := utils.Fetch(client, page, "GET", h, 2, 150_000_000)
 	if resp == nil || resp.Status >= 400 { return nil }
 
 	jsURLs := make(map[string]bool)
@@ -60,7 +60,7 @@ func (s *JSScanner) Scan(client *fasthttp.Client, host string, port int, path st
 
 	// Parse asset-manifest.json / manifest.json for extra JS chunk URLs
 	for _, mp := range []string{"/asset-manifest.json", "/manifest.json", "/build/asset-manifest.json"} {
-		mr := utils.Fetch(client, base+mp, "GET", h, 1, 500_000_000)
+		mr := utils.Fetch(client, base+mp, "GET", h, 1, 150_000_000)
 		if mr != nil && mr.Status == 200 && strings.Contains(mr.Body, ".js") {
 			for _, m := range jsChunkRe.FindAllStringSubmatch(mr.Body, -1) {
 				if len(m) > 1 {
@@ -74,7 +74,7 @@ func (s *JSScanner) Scan(client *fasthttp.Client, host string, port int, path st
 	var allS []extractors.Secret; var allT []string; sc := 0
 	for u := range jsURLs {
 		if sc >= mx { break }
-		jr := utils.Fetch(client, u, "GET", h, 2, 500_000_000)
+		jr := utils.Fetch(client, u, "GET", h, 2, 150_000_000)
 		if jr == nil || jr.Status >= 400 || len(jr.Body) < 10 { continue }
 		sc++
 		allS = append(allS, extractors.ExtractSecrets(jr.Body, u)...)

