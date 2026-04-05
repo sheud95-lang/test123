@@ -2,7 +2,6 @@ package scanners
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/valyala/fasthttp"
@@ -12,12 +11,7 @@ import (
 	"reaper/internal/utils"
 )
 
-var (
-	hdrSecrets  = []string{"x-api-key", "authorization", "x-auth-token", "x-access-token", "set-cookie", "x-powered-by", "server", "x-debug", "x-debug-token", "www-authenticate"}
-	commentRe   = regexp.MustCompile(`(?s)<!--(.*?)-->`)
-	inlineJSRe  = regexp.MustCompile(`(?si)<script[^>]*>(.*?)</script>`)
-	metaRe      = regexp.MustCompile(`(?i)<meta[^>]+(?:content|value)\s*=\s*['"]([^'"]+)['"][^>]*>`)
-)
+var hdrSecrets = []string{"x-api-key", "authorization", "x-auth-token", "x-access-token", "set-cookie", "x-powered-by", "server", "x-debug", "x-debug-token", "www-authenticate"}
 
 type R2SScanner struct{ WAFEvasion bool }
 
@@ -37,9 +31,8 @@ func (s *R2SScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	for _, hn := range hdrSecrets { if v, ok := resp.Headers[hn]; ok && v != "" { hp = append(hp, hn+"="+v) } }
 	if len(hp) > 0 { allS = append(allS, extractors.ExtractSecrets(strings.Join(hp, "\n"), url)...) }
 	body := resp.Body
-	for _, m := range commentRe.FindAllStringSubmatch(body, -1) { if len(m) > 1 { allS = append(allS, extractors.ExtractSecrets(m[1], url)...); td := extractors.ExtractAllTargets(m[1], url); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...) } }
-	for _, m := range inlineJSRe.FindAllStringSubmatch(body, -1) { if len(m) > 1 && len(m[1]) > 5 { allS = append(allS, extractors.ExtractSecrets(m[1], url)...) } }
-	for _, m := range metaRe.FindAllStringSubmatch(body, -1) { if len(m) > 1 { allS = append(allS, extractors.ExtractSecrets(m[1], url)...) } }
+	// Extract secrets from full body only — body already contains comments, inline JS, meta tags
+	// Extracting from subsets separately caused duplicate work and duplicate results
 	allS = append(allS, extractors.ExtractSecrets(body, url)...)
 	td := extractors.ExtractAllTargets(body, url); allT = append(allT, td.IPs...); allT = append(allT, td.Domains...)
 	if len(allS) > 0 || len(allT) > 0 {

@@ -26,6 +26,14 @@ var (
 		`..%5c..%5c..%5cwindows%5cwin.ini`,
 		"../../etc/shadow", "../../etc/hosts",
 		"../../proc/self/environ",
+		// PHP null-byte injection
+		"../etc/passwd%00.png", "../../etc/passwd%00.jpg",
+		// Tomcat / Java
+		"WEB-INF/web.xml", "../WEB-INF/web.xml",
+		"META-INF/context.xml",
+		// Windows-specific
+		`..\\..\\windows\\system32\\drivers\\etc\\hosts`,
+		`..\\..\\..\\windows\\system.ini`,
 	}
 	bkpExts = []string{
 		".bak", ".old", ".save", ".orig", ".copy", ".tmp", ".swp", "~",
@@ -44,6 +52,7 @@ var (
 		"id_rsa", "id_dsa", "id_ed25519",
 		".npmrc", ".pypirc", ".netrc", ".pgpass", ".my.cnf",
 		"docker-compose.yml", ".dockerenv",
+		"WEB-INF/web.xml", "META-INF/context.xml",
 		"Procfile", "Gemfile", "Makefile",
 		"firebase.json", ".firebaserc",
 		"serviceAccountKey.json", "service-account.json",
@@ -57,6 +66,10 @@ var (
 		"BEGIN RSA", "BEGIN EC", "BEGIN DSA", "BEGIN OPENSSH",
 		"smtp_password", "SENDGRID", "MAILGUN",
 		"Authorization:", "Bearer ", "Basic ",
+		// Tomcat / Java markers
+		"<web-app", "<Context", "docBase=",
+		// Windows markers
+		"[boot loader]", "[operating systems]",
 	}
 )
 

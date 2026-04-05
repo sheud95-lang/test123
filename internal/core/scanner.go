@@ -65,26 +65,25 @@ func (rl *RateLimiter) Acquire() {
 		now := time.Now().UnixNano()
 		lastNs := atomic.LoadInt64(&rl.lastNs)
 		elapsed := float64(now-lastNs) / 1e9
-		if elapsed > 0 && atomic.CompareAndSwapInt64(&rl.lastNs, lastNs, now) {
-			// Refill tokens
-			for {
-				cur := rl.tokens.Load()
-				newTok := cur + elapsed*rl.rps
+
+		// Combined refill + consume in a single CAS loop to prevent burst spikes
+		for {
+			cur := rl.tokens.Load()
+			newTok := cur
+			// Refill based on elapsed time (only if we can claim the timestamp)
+			if elapsed > 0 {
+				newTok = cur + elapsed*rl.rps
 				if newTok > rl.maxTok {
 					newTok = rl.maxTok
 				}
-				if rl.tokens.CAS(cur, newTok) {
-					break
-				}
 			}
-		}
-		// Try consume one token
-		for {
-			cur := rl.tokens.Load()
-			if cur < 1.0 {
-				break
+			if newTok < 1.0 {
+				break // not enough tokens even after refill
 			}
-			if rl.tokens.CAS(cur, cur-1.0) {
+			// Try to consume one token atomically
+			if rl.tokens.CAS(cur, newTok-1.0) {
+				// Update timestamp only on successful consume
+				atomic.CompareAndSwapInt64(&rl.lastNs, lastNs, now)
 				return
 			}
 		}
@@ -109,12 +108,17 @@ func GrabBanner(host string, port int, timeout time.Duration) string {
 	return string(buf[:n])
 }
 
+type scannerEntry struct {
+	name    string
+	scanner Scanner
+}
+
 type ScannerEngine struct {
 	Config   *config.ScanConfig
 	Results  *ResultStore
 	Treasure *TreasureWriter
 	rl       *RateLimiter
-	scanners map[string]Scanner
+	scanners []scannerEntry // ordered slice for deterministic iteration
 	client   *fasthttp.Client
 	count       int64
 	scanCounts  map[string]*int64 // per-scanner call counter
@@ -127,13 +131,13 @@ func NewScannerEngine(cfg *config.ScanConfig, rs *ResultStore, tw *TreasureWrite
 	return &ScannerEngine{
 		Config: cfg, Results: rs, Treasure: tw,
 		rl:         NewRateLimiter(cfg.TargetRPS, cfg.BurstSize),
-		scanners:   make(map[string]Scanner), client: client,
+		client:     client,
 		scanCounts: make(map[string]*int64),
 	}
 }
 
 func (se *ScannerEngine) RegisterScanner(s Scanner) {
-	se.scanners[s.Name()] = s
+	se.scanners = append(se.scanners, scannerEntry{name: s.Name(), scanner: s})
 	cnt := int64(0)
 	se.scanCounts[s.Name()] = &cnt
 }
@@ -159,9 +163,20 @@ func (se *ScannerEngine) isStopped() bool { return atomic.LoadInt32(&se.stop) !=
 // Scanners that need the full wordlist (every path).
 var fullPathScanners = map[string]bool{"path": true, "r2s": true}
 
-// Single entry-point for scanners that do their own internal path discovery.
-// These scanners (js, ajs, git, nvca, uafr) only need one call per target.
-var entryPaths = []string{"/"}
+// Strategic entry points for discovery scanners.
+// These hit different app sections that may have different JS, hidden inputs, backup files.
+var entryPaths = []string{
+	"/",
+	"/admin",
+	"/api",
+	"/app",
+	"/dashboard",
+	"/login",
+	"/wp-admin",
+	"/config.php",
+	"/index.php",
+	"/application.yml",
+}
 
 func pathsForScanner(name string, allPaths []string) []string {
 	if fullPathScanners[name] {
@@ -209,7 +224,9 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 		}
 	}
 
-	for sName, scanner := range se.scanners {
+	for _, entry := range se.scanners {
+		sName := entry.name
+		scanner := entry.scanner
 		if se.isStopped() {
 			return
 		}

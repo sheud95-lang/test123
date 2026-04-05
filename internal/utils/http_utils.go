@@ -3,6 +3,8 @@ package utils
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -16,11 +18,13 @@ import (
 type dnsCacheEntry struct {
 	addrs []string
 	ts    time.Time
+	neg   bool // negative cache: DNS lookup failed
 }
 
 var (
-	dnsCache    sync.Map
-	dnsCacheTTL = 5 * time.Minute
+	dnsCache       sync.Map
+	dnsCacheTTL    = 5 * time.Minute
+	dnsNegCacheTTL = 2 * time.Minute // cache failed lookups to avoid repeated DNS failures
 )
 
 func cachedDial(addr string, dialTimeout time.Duration) (net.Conn, error) {
@@ -33,16 +37,25 @@ func cachedDial(addr string, dialTimeout time.Duration) (net.Conn, error) {
 	}
 	if val, ok := dnsCache.Load(host); ok {
 		entry := val.(*dnsCacheEntry)
-		if time.Since(entry.ts) < dnsCacheTTL && len(entry.addrs) > 0 {
+		if entry.neg {
+			// Negative cache: return error quickly if DNS recently failed
+			if time.Since(entry.ts) < dnsNegCacheTTL {
+				return nil, fmt.Errorf("dns negative cache: %s", host)
+			}
+			dnsCache.Delete(host)
+		} else if time.Since(entry.ts) < dnsCacheTTL && len(entry.addrs) > 0 {
 			return fasthttp.DialTimeout(net.JoinHostPort(entry.addrs[0], port), dialTimeout)
+		} else {
+			dnsCache.Delete(host)
 		}
-		dnsCache.Delete(host)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 	if err != nil || len(addrs) == 0 {
-		return fasthttp.DialTimeout(addr, dialTimeout)
+		// Cache failed lookup to avoid repeated DNS queries
+		dnsCache.Store(host, &dnsCacheEntry{neg: true, ts: time.Now()})
+		return nil, fmt.Errorf("dns lookup failed: %s", host)
 	}
 	dnsCache.Store(host, &dnsCacheEntry{addrs: addrs, ts: time.Now()})
 	return fasthttp.DialTimeout(net.JoinHostPort(addrs[0], port), dialTimeout)
@@ -118,7 +131,10 @@ func Fetch(client *fasthttp.Client, url, method string, headers map[string]strin
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			if attempt < maxRetries {
-				time.Sleep(retryDelay * time.Duration(attempt+1))
+				// Exponential backoff with jitter: base * 2^attempt + random jitter
+				backoff := retryDelay * time.Duration(1<<uint(attempt))
+				jitter := time.Duration(rand.Int63n(int64(backoff) / 2))
+				time.Sleep(backoff + jitter)
 			}
 			continue
 		}

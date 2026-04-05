@@ -168,8 +168,29 @@ func init() {
 		// Supabase
 		{"SUPABASE_KEY", `(?i)(?:SUPABASE_KEY|SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY)\s*[=:]\s*['"]?(eyJ[A-Za-z0-9_-]{100,})['"]?`, "supabase", "supabase", 1},
 
-		// Private Key — REMOVED: too many false positives from API docs, swagger, etc.
-		// {"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", "private key", 0},
+		// Private Key — re-enabled with context-aware FP filtering
+		{"PRIVATE_KEY", `-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY(?: BLOCK)?-----`, "private_key", "private key", 0},
+
+		// Vercel
+		{"VERCEL_TOKEN", `(?i)(?:VERCEL_TOKEN|VERCEL_API_TOKEN)\s*[=:]\s*['"]?([A-Za-z0-9]{24,})['"]?`, "vercel", "vercel_", 1},
+
+		// Netlify
+		{"NETLIFY_TOKEN", `(?i)(?:NETLIFY_AUTH_TOKEN|NETLIFY_TOKEN)\s*[=:]\s*['"]?([A-Za-z0-9_-]{40,})['"]?`, "netlify", "netlify_", 1},
+
+		// Doppler
+		{"DOPPLER_TOKEN", `\bdp\.(?:pt|sa|ct)\.[A-Za-z0-9]{40,}\b`, "doppler", "dp.", 0},
+
+		// Linear
+		{"LINEAR_API_KEY", `\blin_api_[A-Za-z0-9]{36,}\b`, "linear", "lin_api_", 0},
+
+		// Airtable
+		{"AIRTABLE_API_KEY", `\bkey[A-Za-z0-9]{14}\b`, "airtable", "key", 0},
+
+		// Notion
+		{"NOTION_TOKEN", `\bsecret_[A-Za-z0-9]{43}\b`, "notion", "secret_", 0},
+
+		// Coinbase
+		{"COINBASE_API_KEY", `(?i)(?:COINBASE_API_KEY|CB_ACCESS_KEY)\s*[=:]\s*['"]?([A-Za-z0-9]{16,})['"]?`, "coinbase", "coinbase", 1},
 
 		// JWT
 		{"JWT_SECRET", `(?i)(?:JWT_SECRET|JWT_KEY|JWT_PRIVATE_KEY|JWT_SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9_+/=.\-]{16,})['"]?`, "jwt", "jwt_", 1},
@@ -230,6 +251,9 @@ var servicePrefixes = []struct {
 	{"sq0atp-", "square"}, {"sq0csp-", "square"},
 	{"base64:", "laravel"},
 	{"smtp://", "smtp"}, {"smtps://", "smtp"},
+	{"dp.pt.", "doppler"}, {"dp.sa.", "doppler"}, {"dp.ct.", "doppler"},
+	{"lin_api_", "linear"},
+	{"secret_", "notion"},
 }
 
 func DetectServiceFromValue(value string) string {
@@ -260,6 +284,23 @@ var fpExact = map[string]bool{
 	"none": true, "undefined": true, "empty": true,
 	"mailpit": true, "localhost": true, "127.0.0.1": true,
 	"smtp": true, "tls": true, "ssl": true, "starttls": true,
+}
+
+// Private key context words that indicate documentation/example, not real keys
+var privateKeyFPContext = []string{
+	"example", "sample", "documentation", "swagger", "api-docs",
+	"redoc", "openapi", "specification", "schema", "tutorial",
+	"readme", "how-to", "guide", "demo", "placeholder",
+}
+
+func isPrivateKeyFP(value string, context string) bool {
+	ctxLower := strings.ToLower(context)
+	for _, w := range privateKeyFPContext {
+		if strings.Contains(ctxLower, w) {
+			return true
+		}
+	}
+	return false
 }
 
 func isFalsePositive(value string) bool {
@@ -329,6 +370,21 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 				}
 				if value == "" || isFalsePositive(value) {
 					continue
+				}
+
+				// Extra FP check for private keys: skip if context suggests docs/example
+				if sp.Name == "PRIVATE_KEY" {
+					// Build context from surrounding lines
+					ctxLines := value
+					for d := -3; d <= 3; d++ {
+						idx := lineNo + d
+						if idx >= 0 && idx < len(lines) {
+							ctxLines += " " + lines[idx]
+						}
+					}
+					if isPrivateKeyFP(value, ctxLines) {
+						continue
+					}
 				}
 
 				dedupKey := sp.Name + ":" + value
@@ -443,6 +499,11 @@ func detectServiceFromKey(key string) string {
 		{[]string{"SENTRY"}, "sentry"},
 		{[]string{"VERCEL"}, "vercel"},
 		{[]string{"NETLIFY"}, "netlify"},
+		{[]string{"DOPPLER"}, "doppler"},
+		{[]string{"LINEAR"}, "linear"},
+		{[]string{"AIRTABLE"}, "airtable"},
+		{[]string{"NOTION"}, "notion"},
+		{[]string{"COINBASE", "CB_"}, "coinbase"},
 		{[]string{"DIGITAL_OCEAN", "DO_", "SPACES_"}, "digitalocean"},
 		{[]string{"HETZNER", "HCLOUD"}, "hetzner"},
 		{[]string{"SUPABASE"}, "supabase"},

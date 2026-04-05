@@ -17,7 +17,13 @@ import (
 )
 
 var (
-	gitPaths2   = []string{"/.git/config", "/.git/HEAD", "/.git/index", "/.git/logs/HEAD", "/.git/refs/heads/master", "/.git/refs/heads/main", "/.git/refs/heads/develop", "/.git/description", "/.git/packed-refs"}
+	gitPaths2 = []string{
+		"/.git/config", "/.git/HEAD", "/.git/index",
+		"/.git/logs/HEAD", "/.git/FETCH_HEAD", "/.git/ORIG_HEAD",
+		"/.git/refs/heads/master", "/.git/refs/heads/main", "/.git/refs/heads/develop",
+		"/.git/description", "/.git/packed-refs",
+		"/.git/objects/info/packs", // pack index discovery
+	}
 	gitMarkers  = []string{"[core]", "[remote", "[branch", "repositoryformatversion"}
 	sha1Re      = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
 )
@@ -41,7 +47,7 @@ func (s *GitScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	}
 	if !exposed { return nil }
 	shas := make(map[string]bool)
-	for _, sp := range []string{"/.git/logs/HEAD", "/.git/packed-refs", "/.git/refs/heads/master", "/.git/refs/heads/main"} {
+	for _, sp := range []string{"/.git/logs/HEAD", "/.git/packed-refs", "/.git/refs/heads/master", "/.git/refs/heads/main", "/.git/FETCH_HEAD", "/.git/ORIG_HEAD"} {
 		r := utils.Fetch(client, base+sp, "GET", h, 2, 500_000_000)
 		if r != nil && r.Status == 200 { for _, sha := range sha1Re.FindAllString(r.Body, -1) { shas[sha] = true } }
 	}
