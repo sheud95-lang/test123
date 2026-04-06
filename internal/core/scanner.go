@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,7 +392,7 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	}
 
 	// Feed targets in batches, log progress between batches
-	batchSize := 500
+	batchSize := 100
 	batchStart := 0
 	for i, t := range targets {
 		if se.isStopped() {
@@ -423,7 +424,9 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 				vOK, vFail, vPend := se.Validator.Stats()
 				validStr = fmt.Sprintf(" | Valid: %d | Invalid: %d | Pending: %d", vOK, vFail, vPend)
 			}
-			log.Printf("Progress: %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d | New: %d%s",
+			// Sticky status bar: overwrite same line using \r + ANSI clear
+			fmt.Fprintf(os.Stderr, "\r\033[2K[%s] %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d | New: %d%s",
+				time.Now().Format("15:04:05"),
 				end, len(targets), c, rps,
 				stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"], validStr)
 			batchStart = end
@@ -465,5 +468,7 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	for name, cnt := range se.scanCounts {
 		scanStats = append(scanStats, fmt.Sprintf("%s=%d", name, atomic.LoadInt64(cnt)))
 	}
+	// Clear sticky status bar and print final stats
+	fmt.Fprintf(os.Stderr, "\r\033[2K")
 	log.Printf("Done: %d reqs in %.1fs (%.0f RPS) | Scanner calls: %s", c, elapsed, rps, strings.Join(scanStats, ", "))
 }

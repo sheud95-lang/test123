@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
@@ -37,7 +38,13 @@ func banner(cfg *config.ScanConfig, wlCount int) {
 	if !cfg.WAFEvasion {
 		wafLabel = "OFF"
 	}
-	fmt.Printf("  WAF bypass:  %s\n", wafLabel)
+	fmt.Printf("  WAF bypass:  %s (L%d)\n", wafLabel, cfg.WAFLevel)
+	if cfg.Validate {
+		fmt.Printf("  Validation:  ON\n")
+	}
+	if cfg.Recon || cfg.ReconReverseIP || cfg.ReconSubdomains || cfg.ReconTLDSweep || cfg.ReconDeepChain {
+		fmt.Printf("  Recon:       ON\n")
+	}
 	fmt.Printf("  Output:      %s/\n\n", cfg.OutputDir)
 }
 
@@ -51,7 +58,160 @@ func parsePorts(s string) []int {
 	return ports
 }
 
+func readLine(prompt string) string {
+	fmt.Print(prompt)
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	return strings.TrimSpace(scanner.Text())
+}
+
+func readIntDefault(prompt string, def int) int {
+	s := readLine(fmt.Sprintf("%s [%d]: ", prompt, def))
+	if s == "" {
+		return def
+	}
+	if v, err := strconv.Atoi(s); err == nil {
+		return v
+	}
+	return def
+}
+
+func interactiveMenu() *config.ScanConfig {
+	fmt.Println(`
+    ____
+   / __ \___  ____ _____  ___  _____
+  / /_/ / _ \/ __ ` + "`" + `/ __ \/ _ \/ ___/
+ / _, _/  __/ /_/ / /_/ /  __/ /
+/_/ |_|\___/\__,_/ .___/\___/_/   v3-go
+                /_/
+    Zero-Target Secret Scanner`)
+	fmt.Println()
+	fmt.Println("  [1] Quick Scan    (50k targets, all scanners)")
+	fmt.Println("  [2] Deep Scan     (200k targets, recon + validate)")
+	fmt.Println("  [3] Stealth Scan  (10k targets, low RPS, WAF L3)")
+	fmt.Println("  [4] Custom Scan   (configure everything)")
+	fmt.Println()
+
+	choice := readLine("  > ")
+
+	cfg := &config.ScanConfig{
+		MaxTargets:          50000,
+		TargetMode:          "all",
+		Ports:               []int{80, 443, 8080, 8443},
+		PrecheckPorts:       true,
+		PrecheckTimeout:     2 * time.Second,
+		PrecheckConcurrency: 5000,
+		ShodanAPIKey:        os.Getenv("SHODAN_API_KEY"),
+		CensysAPIID:         os.Getenv("CENSYS_API_ID"),
+		CensysAPISecret:     os.Getenv("CENSYS_API_SECRET"),
+		FOFAEmail:           os.Getenv("FOFA_EMAIL"),
+		FOFAAPIKey:          os.Getenv("FOFA_API_KEY"),
+		MaxConcurrentReqs:   800,
+		MaxConnsPerHost:     15,
+		TotalConnectorLimit: 2000,
+		TargetRPS:           4000,
+		BurstSize:           500,
+		ConnectTimeout:      5 * time.Second,
+		ReadTimeout:         8 * time.Second,
+		TotalTimeout:        12 * time.Second,
+		ScanMode:            "L4+L7",
+		WAFEvasion:          true,
+		WAFLevel:            1,
+		DelayJitterMinMs:    0,
+		DelayJitterMaxMs:    30,
+		EnabledScanners:     []string{"path", "js", "r2s", "nvca", "ajs", "uafr", "git"},
+		OutputDir:           "results",
+		Verbose:             true,
+		ExcludePrivate:      true,
+		AutosaveInterval:    30 * time.Second,
+	}
+
+	switch choice {
+	case "1": // Quick Scan — defaults are fine
+	case "2": // Deep Scan
+		cfg.MaxTargets = 200000
+		cfg.Validate = true
+		cfg.Recon = true
+		cfg.ReconReverseIP = true
+		cfg.ReconSubdomains = true
+		cfg.ReconTLDSweep = true
+		cfg.ReconDeepChain = true
+	case "3": // Stealth Scan
+		cfg.MaxTargets = 10000
+		cfg.TargetRPS = 500
+		cfg.MaxConcurrentReqs = 100
+		cfg.WAFLevel = 3
+		cfg.DelayJitterMinMs = 50
+		cfg.DelayJitterMaxMs = 200
+	case "4": // Custom
+		cfg.MaxTargets = readIntDefault("  Max targets", 50000)
+		cfg.TargetRPS = readIntDefault("  RPS", 4000)
+		cfg.MaxConcurrentReqs = readIntDefault("  Concurrency", 800)
+
+		portsIn := readLine("  Ports [80,443,8080,8443]: ")
+		if portsIn != "" {
+			cfg.Ports = parsePorts(portsIn)
+		}
+
+		modeIn := readLine("  Mode (L4, L7, L4+L7) [L4+L7]: ")
+		if modeIn != "" {
+			cfg.ScanMode = modeIn
+		}
+
+		scannersIn := readLine("  Scanners [path,js,r2s,nvca,ajs,uafr,git]: ")
+		if scannersIn != "" {
+			list := strings.Split(scannersIn, ",")
+			for i := range list {
+				list[i] = strings.TrimSpace(list[i])
+			}
+			cfg.EnabledScanners = list
+		}
+
+		cfg.WAFLevel = readIntDefault("  WAF level (0=off, 1-5)", 1)
+		cfg.WAFEvasion = cfg.WAFLevel > 0
+
+		validateIn := readLine("  Validate secrets? (y/N): ")
+		cfg.Validate = strings.ToLower(validateIn) == "y"
+
+		reconIn := readLine("  Enable recon? (y/N): ")
+		if strings.ToLower(reconIn) == "y" {
+			cfg.Recon = true
+			cfg.ReconReverseIP = true
+			cfg.ReconSubdomains = true
+			cfg.ReconTLDSweep = true
+			cfg.ReconDeepChain = true
+		}
+
+		outIn := readLine("  Output dir [results]: ")
+		if outIn != "" {
+			cfg.OutputDir = outIn
+		}
+	default:
+		fmt.Println("  Invalid choice, using Quick Scan defaults.")
+	}
+
+	return cfg
+}
+
 func main() {
+	// Interactive mode: no args → show menu
+	if len(os.Args) == 1 {
+		cfg := interactiveMenu()
+		fmt.Println()
+
+		os.MkdirAll(cfg.OutputDir, 0o755)
+		log.SetOutput(os.Stdout)
+
+		banner(cfg, 0)
+
+		eng := engine.NewReaperEngine(cfg)
+		if err := eng.Run(nil, false); err != nil {
+			log.Fatalf("Error: %v", err)
+		}
+		return
+	}
+
+	// Flag-based mode for advanced users / automation
 	var (
 		wordlists       string
 		noDefaultPaths  bool

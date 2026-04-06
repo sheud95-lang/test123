@@ -29,7 +29,7 @@ func (s *AJSScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	page := base + path
 	var h map[string]string
-	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
+	if s.WAFEvasion && !isIP { h = core.GenerateHeaders(host) }
 	resp := utils.Fetch(client, page, "GET", h, 2, 150_000_000)
 	if resp == nil || resp.Status >= 400 { return nil }
 	body := resp.Body

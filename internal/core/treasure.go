@@ -181,11 +181,12 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		line := fmt.Sprintf("[%s] %s — %s: %s%s\n", ts, sourceURL, s.Type, s.Value, tag)
 		tw.hitsFile.WriteString(line)
 
-		// Real-time hit notification to stdout
+		// Real-time hit notification — print above sticky status bar
 		val := s.Value
 		if len(val) > 40 {
 			val = val[:37] + "..."
 		}
+		fmt.Fprintf(os.Stderr, "\r\033[2K")
 		log.Printf("[HIT] %s — %s: %s%s", sourceURL, s.Type, val, tag)
 	}
 
@@ -195,7 +196,7 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	for _, s := range secrets {
 		svc := s.Service
 		if svc == "" {
-			continue
+			svc = "generic"
 		}
 		if svc == "smtp" {
 			smtpSecrets = append(smtpSecrets, s)
@@ -302,7 +303,7 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	}
 }
 
-var excludeFromAll = map[string]bool{"smtp": true, "auth": true, "jwt": true, "firebase": true, "google": true}
+var excludeFromAll = map[string]bool{"auth": true}
 
 func (tw *TreasureWriter) WriteValid(sourceURL, service, key, detail string) {
 	tw.mu.Lock()

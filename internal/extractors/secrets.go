@@ -205,10 +205,10 @@ func init() {
 
 		// SMTP
 		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", "smtp", 0},
-		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)[_\s]*(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", "", 1},
-		{"SMTP_USER", `(?i)(?:SMTP|MAIL)[_\s]*(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
-		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)[_\s]*(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
-		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)[_\s]*PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
+		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)_(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", "", 1},
+		{"SMTP_USER", `(?i)(?:SMTP|MAIL)_(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)_(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)_PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
 
 		// Generic secret (catch-all for SECRET=xxx, TOKEN=xxx, PASSWORD=xxx, API_KEY=xxx)
 		{"GENERIC_SECRET", `(?i)(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|AUTH_TOKEN)\s*[=:]\s*['"]?([^\s'"]{8,})['"]?`, "", "", 1},
@@ -344,24 +344,50 @@ func isCodeLikeValue(value string) bool {
 	if strings.ContainsAny(value, "(){};<>|&") {
 		return true
 	}
-	// Arrow functions, commas (object literals), colons mid-value (JS objects)
+	// Arrow functions, commas (object literals)
 	if strings.Contains(value, "=>") || strings.Contains(value, ",") {
+		return true
+	}
+	// Comparison operators (JS code)
+	if strings.Contains(value, "==") || strings.Contains(value, "!=") {
+		return true
+	}
+	// Contains colon — JS object property like "key:value"
+	if strings.Contains(value, ":") {
 		return true
 	}
 	// Starts with code-like chars
 	if len(value) > 0 && (value[0] == '!' || value[0] == '=' || value[0] == '~' || value[0] == '?') {
 		return true
 	}
-	// JS method chains: contains . followed by word chars (e.token, e.password)
+	// Dot notation: word.word pattern (e.target, renderInputType.number)
+	// Allow domain-like dots (smtp.gmail.com has 2+ dots, TLDs)
 	if strings.Contains(value, ".") {
-		for i := 0; i < len(value)-1; i++ {
-			if value[i] == '.' && ((value[i+1] >= 'a' && value[i+1] <= 'z') || (value[i+1] >= 'A' && value[i+1] <= 'Z')) {
-				// Allow domain-like patterns (smtp.gmail.com) but reject code (e.token)
-				if i > 0 && value[i-1] >= 'a' && value[i-1] <= 'z' && (i < 3 || value[i-2] < '0') {
-					return true
+		for i := 1; i < len(value)-1; i++ {
+			if value[i] == '.' {
+				prevIsAlpha := (value[i-1] >= 'a' && value[i-1] <= 'z') || (value[i-1] >= 'A' && value[i-1] <= 'Z')
+				nextIsAlpha := (value[i+1] >= 'a' && value[i+1] <= 'z') || (value[i+1] >= 'A' && value[i+1] <= 'Z')
+				if prevIsAlpha && nextIsAlpha {
+					// Count dots — domains have 2+ dots (smtp.gmail.com), code has 1 (e.target)
+					dotCount := strings.Count(value, ".")
+					if dotCount < 2 {
+						return true
+					}
 				}
 			}
 		}
+	}
+	// Pure alphabetic word under 20 chars → likely a label/keyword, not a secret
+	// Real secrets have digits, special chars, or are longer
+	allAlpha := true
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r > 127) {
+			allAlpha = false
+			break
+		}
+	}
+	if allAlpha && len(value) < 20 {
+		return true
 	}
 	return false
 }
@@ -435,8 +461,8 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 					continue
 				}
 
-				// GENERIC_SECRET: filter out code-like values (minified JS etc)
-				if sp.Name == "GENERIC_SECRET" && isCodeLikeValue(value) {
+				// GENERIC_SECRET + SMTP: filter out code-like values (minified JS etc)
+				if (sp.Name == "GENERIC_SECRET" || strings.HasPrefix(sp.Name, "SMTP_")) && isCodeLikeValue(value) {
 					continue
 				}
 

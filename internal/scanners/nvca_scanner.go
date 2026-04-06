@@ -29,11 +29,11 @@ func (s *NVCAScanner) Scan(client *fasthttp.Client, host string, port int, path 
 	if port == 80 { scheme = "http" }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	var h map[string]string
-	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
+	if s.WAFEvasion && !isIP { h = core.GenerateHeaders(host) }
 
 	var allS []extractors.Secret; var allT []string; var pResp *utils.HTTPResponse
 	for _, sp := range append([]string{path}, errPaths...) {
-		p := sp; if s.WAFEvasion { p = core.MutatePath(sp) }
+		p := sp; if s.WAFEvasion && !isIP { p = core.MutatePath(sp) }
 		resp := utils.Fetch(client, base+p, "GET", h, 2, 150_000_000)
 		if resp == nil { continue }
 		if pResp == nil { pResp = resp }

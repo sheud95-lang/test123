@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"reaper/internal/config"
@@ -21,11 +22,12 @@ type ReconEngine struct {
 	client *http.Client
 	tg     *core.TargetGenerator
 	cfg    *config.ScanConfig
-	seen   sync.Map    // dedup: already processed targets
-	queue  chan reconTask
-	stop   chan struct{}
-	wg     sync.WaitGroup
-	sem    chan struct{} // concurrency limiter
+	seen    sync.Map    // dedup: already processed targets
+	queue   chan reconTask
+	stop    chan struct{}
+	wg      sync.WaitGroup
+	sem     chan struct{} // concurrency limiter
+	stopped int32        // atomic: 1 = stopped
 }
 
 func NewReconEngine(cfg *config.ScanConfig, tg *core.TargetGenerator) *ReconEngine {
@@ -58,9 +60,16 @@ func (re *ReconEngine) Run() {
 				re.processTask(t)
 			}(task)
 		case <-re.stop:
-			close(re.queue)
-			for task := range re.queue {
-				re.processTask(task)
+			// Drain remaining tasks without closing the channel
+			// (other goroutines may still send)
+		drain:
+			for {
+				select {
+				case task := <-re.queue:
+					re.processTask(task)
+				default:
+					break drain
+				}
 			}
 			re.wg.Wait()
 			return
@@ -69,13 +78,14 @@ func (re *ReconEngine) Run() {
 }
 
 func (re *ReconEngine) Stop() {
+	atomic.StoreInt32(&re.stopped, 1)
 	close(re.stop)
 	re.wg.Wait()
 }
 
 // SubmitIP submits an IP for reverse lookup
 func (re *ReconEngine) SubmitIP(ip string) {
-	if !re.cfg.ReconReverseIP {
+	if atomic.LoadInt32(&re.stopped) != 0 || !re.cfg.ReconReverseIP {
 		return
 	}
 	if _, loaded := re.seen.LoadOrStore("rip:"+ip, true); loaded {
@@ -89,6 +99,9 @@ func (re *ReconEngine) SubmitIP(ip string) {
 
 // SubmitDomain submits a domain for subdomain enum + TLD sweep
 func (re *ReconEngine) SubmitDomain(domain string) {
+	if atomic.LoadInt32(&re.stopped) != 0 {
+		return
+	}
 	if _, loaded := re.seen.LoadOrStore("dom:"+domain, true); loaded {
 		return
 	}
@@ -108,7 +121,7 @@ func (re *ReconEngine) SubmitDomain(domain string) {
 
 // SubmitURL submits a URL for deep content extraction
 func (re *ReconEngine) SubmitURL(u string) {
-	if !re.cfg.ReconDeepChain {
+	if atomic.LoadInt32(&re.stopped) != 0 || !re.cfg.ReconDeepChain {
 		return
 	}
 	if _, loaded := re.seen.LoadOrStore("url:"+u, true); loaded {

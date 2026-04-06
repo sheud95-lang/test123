@@ -36,7 +36,7 @@ func (s *GitScanner) Scan(client *fasthttp.Client, host string, port int, path s
 	mx := s.MaxObjects; if mx <= 0 { mx = 50 }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	var h map[string]string
-	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
+	if s.WAFEvasion && !isIP { h = core.GenerateHeaders(host) }
 	var allS []extractors.Secret; var allT []string; exposed := false
 	for _, gp := range gitPaths2 {
 		u := base + gp; r := utils.Fetch(client, u, "GET", h, 2, 150_000_000)

@@ -19,10 +19,10 @@ func (s *R2SScanner) Name() string { return "r2s" }
 
 func (s *R2SScanner) Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *core.ScanResult {
 	if port == 80 { scheme = "http" }
-	p := path; if s.WAFEvasion { p = core.MutatePath(path) }
+	p := path; if s.WAFEvasion && !isIP { p = core.MutatePath(path) }
 	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, port, p)
 	var h map[string]string
-	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
+	if s.WAFEvasion && !isIP { h = core.GenerateHeaders(host) }
 	resp := utils.Fetch(client, url, "GET", h, 2, 150_000_000)
 	if resp == nil { return nil }
 

@@ -81,7 +81,7 @@ func (s *UAFRScanner) Scan(client *fasthttp.Client, host string, port int, path 
 	if port == 80 { scheme = "http" }
 	base := fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	var h map[string]string
-	if s.WAFEvasion { ch := ""; if !isIP { ch = host }; h = core.GenerateHeaders(ch) }
+	if s.WAFEvasion && !isIP { h = core.GenerateHeaders(host) }
 	var allS []extractors.Secret; var allT []string; var pResp *utils.HTTPResponse
 	last := strings.LastIndex(path, "/"); part := ""; if last >= 0 && last < len(path)-1 { part = path[last+1:] }
 	if strings.Contains(part, ".") {
