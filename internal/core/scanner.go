@@ -26,6 +26,14 @@ type Scanner interface {
 // SecretValidator validates found secrets against APIs. Implemented by validators.Validator.
 type SecretValidator interface {
 	ValidateSecrets(sourceURL string, secrets []extractors.Secret)
+	Stats() (valid, invalid, pending int64)
+}
+
+// ReconSubmitter allows submitting targets for reconnaissance. Implemented by recon.ReconEngine.
+type ReconSubmitter interface {
+	SubmitIP(ip string)
+	SubmitDomain(domain string)
+	SubmitURL(u string)
 }
 
 // ---- Lock-free rate limiter (atomic CAS) ----
@@ -119,13 +127,15 @@ type scannerEntry struct {
 }
 
 type ScannerEngine struct {
-	Config    *config.ScanConfig
-	Results   *ResultStore
-	Treasure  *TreasureWriter
-	Validator SecretValidator // optional: validates found secrets against APIs
-	rl        *RateLimiter
-	scanners  []scannerEntry // ordered slice for deterministic iteration
-	client    *fasthttp.Client
+	Config      *config.ScanConfig
+	Results     *ResultStore
+	Treasure    *TreasureWriter
+	Validator   SecretValidator  // optional: validates found secrets against APIs
+	Recon       ReconSubmitter   // optional: feeds targets for recon
+	WAFTracker  *WAFTracker      // optional: adaptive WAF level tracking (level 5)
+	rl          *RateLimiter
+	scanners    []scannerEntry // ordered slice for deterministic iteration
+	client      *fasthttp.Client
 	count       int64
 	scanCounts  map[string]*int64 // per-scanner call counter
 	start       time.Time
@@ -134,12 +144,16 @@ type ScannerEngine struct {
 
 func NewScannerEngine(cfg *config.ScanConfig, rs *ResultStore, tw *TreasureWriter) *ScannerEngine {
 	client := utils.NewFastHTTPClient(cfg.ConnectTimeout, cfg.ReadTimeout, cfg.TotalTimeout, cfg.MaxConnsPerHost, cfg.TotalConnectorLimit)
-	return &ScannerEngine{
+	se := &ScannerEngine{
 		Config: cfg, Results: rs, Treasure: tw,
 		rl:         NewRateLimiter(cfg.TargetRPS, cfg.BurstSize),
 		client:     client,
 		scanCounts: make(map[string]*int64),
 	}
+	if cfg.WAFLevel >= WAFLevel5 {
+		se.WAFTracker = NewWAFTracker()
+	}
+	return se
 }
 
 func (se *ScannerEngine) RegisterScanner(s Scanner) {
@@ -281,6 +295,16 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 				if added {
 					if tg != nil && len(result.NewTargets) > 0 {
 						tg.AddFromParsedContent(strings.Join(result.NewTargets, "\n"), se.Config.Ports)
+						// Feed new targets to recon engine
+						if se.Recon != nil {
+							for _, nt := range result.NewTargets {
+								if net.ParseIP(nt) != nil {
+									se.Recon.SubmitIP(nt)
+								} else {
+									se.Recon.SubmitDomain(nt)
+								}
+							}
+						}
 					}
 					if se.Treasure != nil && len(result.Secrets) > 0 {
 						se.Treasure.WriteFinding(result.URL, result.Scanner, result.Secrets)
@@ -394,9 +418,14 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 				rps = float64(c) / elapsed
 			}
 			stats := se.Results.Stats()
-			log.Printf("Progress: %d/%d | %d reqs | %.0f RPS | Secret hits: %d | Unique secrets: %d | New targets: %d",
+			validStr := ""
+			if se.Validator != nil {
+				vOK, vFail, vPend := se.Validator.Stats()
+				validStr = fmt.Sprintf(" | Valid: %d | Invalid: %d | Pending: %d", vOK, vFail, vPend)
+			}
+			log.Printf("Progress: %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d | New: %d%s",
 				end, len(targets), c, rps,
-				stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"])
+				stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"], validStr)
 			batchStart = end
 
 			// Chain new targets between batches

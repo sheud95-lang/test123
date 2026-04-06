@@ -12,6 +12,7 @@ import (
 
 	"reaper/internal/config"
 	"reaper/internal/core"
+	"reaper/internal/recon"
 	"reaper/internal/scanners"
 	"reaper/internal/validators"
 )
@@ -25,6 +26,7 @@ type ReaperEngine struct {
 	SE       *core.ScannerEngine
 	Treasure *core.TreasureWriter
 	Dedup    *core.DedupStore
+	Recon    *recon.ReconEngine
 }
 
 func NewReaperEngine(cfg *config.ScanConfig) *ReaperEngine {
@@ -59,11 +61,22 @@ func NewReaperEngine(cfg *config.ScanConfig) *ReaperEngine {
 		log.Printf("Secret validation: ENABLED")
 	}
 
-	return &ReaperEngine{
+	e := &ReaperEngine{
 		Config: cfg, PL: core.NewPathLoader(), RS: rs,
 		IPGen: core.NewIPGenerator(cfg), TG: tg, SE: se,
 		Treasure: tw, Dedup: dedup,
 	}
+
+	// Recon engine (optional)
+	if cfg.ReconReverseIP || cfg.ReconSubdomains || cfg.ReconTLDSweep || cfg.ReconDeepChain {
+		e.Recon = recon.NewReconEngine(cfg, tg)
+		go e.Recon.Run()
+		se.Recon = e.Recon
+		log.Printf("Recon: ENABLED (reverseIP=%v, subdomains=%v, tld=%v, deep=%v)",
+			cfg.ReconReverseIP, cfg.ReconSubdomains, cfg.ReconTLDSweep, cfg.ReconDeepChain)
+	}
+
+	return e
 }
 
 func (e *ReaperEngine) Run(wlFiles []string, noDefault bool) error {
@@ -164,7 +177,11 @@ func (e *ReaperEngine) Run(wlFiles []string, noDefault bool) error {
 }
 
 func (e *ReaperEngine) save() {
-	// Stop validator first so it finishes pending validations before treasure closes
+	// Stop recon first
+	if e.Recon != nil {
+		e.Recon.Stop()
+	}
+	// Stop validator so it finishes pending validations before treasure closes
 	if v, ok := e.SE.Validator.(*validators.Validator); ok && v != nil {
 		v.Stop()
 	}

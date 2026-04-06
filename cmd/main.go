@@ -66,11 +66,17 @@ func main() {
 		concurrency     int
 		scannersStr     string
 		noWAF           bool
+		wafLevel        int
 		connectTimeout  float64
 		readTimeout     float64
 		outputDir       string
 		quiet           bool
 		validate        bool
+		recon           bool
+		reconReverseIP  bool
+		reconSubdomains bool
+		reconTLD        bool
+		reconDeep       bool
 	)
 
 	flag.StringVar(&wordlists, "w", "", "Comma-separated wordlist files")
@@ -86,11 +92,17 @@ func main() {
 	flag.IntVar(&concurrency, "concurrency", 800, "Concurrency")
 	flag.StringVar(&scannersStr, "scanners", "path,js,r2s,nvca,ajs,uafr,git", "Scanners")
 	flag.BoolVar(&noWAF, "no-waf-bypass", false, "Disable WAF evasion")
+	flag.IntVar(&wafLevel, "waf-level", 1, "WAF bypass level 1-5 (5=adaptive)")
 	flag.Float64Var(&connectTimeout, "connect-timeout", 5.0, "Connect timeout")
 	flag.Float64Var(&readTimeout, "read-timeout", 8.0, "Read timeout")
 	flag.StringVar(&outputDir, "o", "results", "Output dir")
 	flag.BoolVar(&quiet, "q", false, "Quiet")
 	flag.BoolVar(&validate, "validate", false, "Validate found secrets against APIs")
+	flag.BoolVar(&recon, "recon", false, "Enable all recon modules")
+	flag.BoolVar(&reconReverseIP, "recon-reverse-ip", false, "Enable reverse IP lookup")
+	flag.BoolVar(&reconSubdomains, "recon-subdomains", false, "Enable subdomain enumeration")
+	flag.BoolVar(&reconTLD, "recon-tld", false, "Enable TLD sweep")
+	flag.BoolVar(&reconDeep, "recon-deep", false, "Enable deep JS/HTML chaining")
 	flag.Parse()
 
 	scannersList := strings.Split(scannersStr, ",")
@@ -120,6 +132,7 @@ func main() {
 		TotalTimeout:        12 * time.Second,
 		ScanMode:            scanMode,
 		WAFEvasion:          !noWAF,
+		WAFLevel:            wafLevel,
 		DelayJitterMinMs:    0,
 		DelayJitterMaxMs:    30,
 		EnabledScanners:     scannersList,
@@ -127,6 +140,11 @@ func main() {
 		Verbose:             !quiet,
 		ExcludePrivate:      true,
 		Validate:            validate,
+		Recon:               recon,
+		ReconReverseIP:      recon || reconReverseIP,
+		ReconSubdomains:     recon || reconSubdomains,
+		ReconTLDSweep:       recon || reconTLD,
+		ReconDeepChain:      recon || reconDeep,
 		AutosaveInterval:    30 * time.Second,
 	}
 

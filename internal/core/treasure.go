@@ -3,6 +3,8 @@ package core
 import (
 	"bufio"
 	"fmt"
+	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,6 +82,7 @@ type TreasureWriter struct {
 	validByService map[string][]string // aggregated for all_valid.txt
 	validSeen      map[string]map[string]bool // dedup
 	smtpEntries    []*smtpEntry        // accumulated SMTP connection blocks
+	pathHits       map[string]int     // path -> hit count for leaderboard
 	stopFlush      chan struct{}
 }
 
@@ -104,6 +107,7 @@ func NewTreasureWriter(outputDir string) *TreasureWriter {
 		validByService: make(map[string][]string),
 		validSeen:      make(map[string]map[string]bool),
 		smtpEntries:    nil,
+		pathHits:       make(map[string]int),
 		stopFlush:      make(chan struct{}),
 	}
 
@@ -159,6 +163,15 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	}
 	secrets = newSecrets
 
+	// Track path hits for leaderboard
+	if u, err := url.Parse(sourceURL); err == nil {
+		p := u.Path
+		if p == "" {
+			p = "/"
+		}
+		tw.pathHits[p] += len(secrets)
+	}
+
 	ts := time.Now().UTC().Format("15:04:05")
 	for _, s := range secrets {
 		tag := ""
@@ -167,6 +180,13 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		}
 		line := fmt.Sprintf("[%s] %s — %s: %s%s\n", ts, sourceURL, s.Type, s.Value, tag)
 		tw.hitsFile.WriteString(line)
+
+		// Real-time hit notification to stdout
+		val := s.Value
+		if len(val) > 40 {
+			val = val[:37] + "..."
+		}
+		log.Printf("[HIT] %s — %s: %s%s", sourceURL, s.Type, val, tag)
 	}
 
 	svcGroups := make(map[string][]extractors.Secret)
@@ -380,6 +400,34 @@ func (tw *TreasureWriter) Close() {
 				tw.allValidFile.WriteString(v + "\n")
 			}
 			tw.allValidFile.WriteString("\n")
+		}
+	}
+
+	// Write path leaderboard
+	if len(tw.pathHits) > 0 {
+		type pathStat struct {
+			path  string
+			count int
+		}
+		var sorted []pathStat
+		for p, c := range tw.pathHits {
+			sorted = append(sorted, pathStat{p, c})
+		}
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
+		lbPath := filepath.Join(tw.treasureDir, "path_leaderboard.txt")
+		if f, err := os.Create(lbPath); err == nil {
+			w := bufio.NewWriter(f)
+			w.WriteString("Path Leaderboard — Top paths by secret hits\n")
+			w.WriteString(strings.Repeat("=", 50) + "\n\n")
+			limit := len(sorted)
+			if limit > 100 {
+				limit = 100
+			}
+			for i := 0; i < limit; i++ {
+				w.WriteString(fmt.Sprintf("%4d | %s\n", sorted[i].count, sorted[i].path))
+			}
+			w.Flush()
+			f.Close()
 		}
 	}
 

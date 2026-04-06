@@ -24,6 +24,7 @@ type ScanConfig struct {
 	TotalTimeout        time.Duration
 	ScanMode            string
 	WAFEvasion          bool
+	WAFLevel            int // 1-5, default 1
 	DelayJitterMinMs    int
 	DelayJitterMaxMs    int
 	EnabledScanners     []string
@@ -32,5 +33,10 @@ type ScanConfig struct {
 	ExcludePrivate      bool
 	BlacklistFile       string
 	Validate            bool
+	Recon               bool
+	ReconReverseIP      bool
+	ReconSubdomains     bool
+	ReconTLDSweep       bool
+	ReconDeepChain      bool
 	AutosaveInterval    time.Duration
 }

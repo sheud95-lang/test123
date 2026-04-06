@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"reaper/internal/core"
@@ -24,13 +25,16 @@ type validationTask struct {
 }
 
 type Validator struct {
-	client   *http.Client
-	treasure *core.TreasureWriter
-	queue    chan validationTask
-	stop     chan struct{}
-	wg       sync.WaitGroup
-	seen     map[string]bool // dedup: don't validate same key twice
-	mu       sync.Mutex
+	client       *http.Client
+	treasure     *core.TreasureWriter
+	queue        chan validationTask
+	stop         chan struct{}
+	wg           sync.WaitGroup
+	seen         map[string]bool // dedup: don't validate same key twice
+	mu           sync.Mutex
+	ValidCount   int64 // atomic: successfully validated
+	InvalidCount int64 // atomic: validation failed (key invalid)
+	PendingCount int64 // atomic: in queue / in-flight
 }
 
 func NewValidator(tw *core.TreasureWriter) *Validator {
@@ -80,10 +84,16 @@ func (v *Validator) Stop() {
 }
 
 func (v *Validator) ValidateSecrets(sourceURL string, secrets []extractors.Secret) {
+	atomic.AddInt64(&v.PendingCount, 1)
 	select {
 	case v.queue <- validationTask{sourceURL: sourceURL, secrets: secrets}:
-	default: // drop if queue full
+	default:
+		atomic.AddInt64(&v.PendingCount, -1) // dropped
 	}
+}
+
+func (v *Validator) Stats() (valid, invalid, pending int64) {
+	return atomic.LoadInt64(&v.ValidCount), atomic.LoadInt64(&v.InvalidCount), atomic.LoadInt64(&v.PendingCount)
 }
 
 func (v *Validator) markSeen(key string) bool {
@@ -97,6 +107,8 @@ func (v *Validator) markSeen(key string) bool {
 }
 
 func (v *Validator) processTask(task validationTask) {
+	defer atomic.AddInt64(&v.PendingCount, -1)
+
 	// Group secrets by type for pairing (AWS, Twilio)
 	byType := make(map[string][]extractors.Secret)
 	for _, s := range task.secrets {
@@ -199,8 +211,12 @@ func (v *Validator) processTask(task validationTask) {
 		}
 
 		if valid {
+			atomic.AddInt64(&v.ValidCount, 1)
 			log.Printf("[VALID] %s %s: %s (%s)", s.Service, s.Type, s.Value[:min(len(s.Value), 20)]+"...", detail)
 			v.treasure.WriteValid(task.sourceURL, s.Service, s.Value, fmt.Sprintf("%s — %s", s.Type, detail))
+		} else {
+			atomic.AddInt64(&v.InvalidCount, 1)
+			log.Printf("[INVALID] %s %s: %s", s.Service, s.Type, s.Value[:min(len(s.Value), 20)]+"...")
 		}
 	}
 }
