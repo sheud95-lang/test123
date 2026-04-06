@@ -419,10 +419,15 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 				vOK, vFail, vPend := se.Validator.Stats()
 				validStr = fmt.Sprintf(" | V:%d I:%d P:%d", vOK, vFail, vPend)
 			}
-			// Console window title — visible in taskbar, works on Windows+Linux+Mac
-			fmt.Fprintf(os.Stderr, "\033]0;Reaper | %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d%s\007",
+			statusMsg := fmt.Sprintf("Reaper | %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d%s",
 				i+1, len(targets), c, rps,
 				stats["hits_with_secrets"], stats["total_secrets"], validStr)
+			// Console window title (taskbar)
+			fmt.Fprintf(os.Stderr, "\033]0;%s\007", statusMsg)
+			// Also log every 30 seconds for terminals that don't show title
+			if time.Since(lastStatus) > 30*time.Second || i == len(targets)-1 {
+				log.Printf("[STATUS] %s", statusMsg)
+			}
 			lastStatus = time.Now()
 		}
 

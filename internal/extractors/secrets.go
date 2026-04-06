@@ -72,10 +72,6 @@ func init() {
 		{"SLACK_APP_TOKEN", `\bxapp-[A-Za-z0-9-]{10,}\b`, "slack", "xapp-", 0},
 		{"SLACK_WEBHOOK", `https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+`, "slack", "hooks.slack.com", 0},
 
-		// Discord
-		{"DISCORD_BOT_TOKEN", `[MN][A-Za-z\d]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}`, "discord", "", 0},
-		{"DISCORD_WEBHOOK", `https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+`, "discord", "discord", 0},
-
 		// Telegram
 		{"TELEGRAM_BOT_TOKEN", `\b\d{8,12}:AA[A-Za-z0-9_-]{33,35}\b`, "telegram", ":aa", 0},
 
@@ -203,12 +199,36 @@ func init() {
 		// Django
 		{"DJANGO_SECRET_KEY", `(?i)(?:DJANGO_SECRET_KEY|SECRET_KEY)\s*[=:]\s*['"]?([A-Za-z0-9!@#$%^&*()\-_=+]{50,})['"]?`, "django", "secret_key", 1},
 
-		// SMTP
-		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", "smtp", 0},
-		{"SMTP_HOST", `(?i)(?:SMTP|MAIL)_(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", "", 1},
-		{"SMTP_USER", `(?i)(?:SMTP|MAIL)_(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
-		{"SMTP_PASS", `(?i)(?:SMTP|MAIL)_(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
-		{"SMTP_PORT", `(?i)(?:SMTP|MAIL)_PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
+		// Stripe publishable (less sensitive but reveals integration)
+		{"STRIPE_PUBLISHABLE_KEY", `\bpk_live_[A-Za-z0-9]{24,}\b`, "stripe", "pk_live_", 0},
+		{"STRIPE_TEST_PUBLISHABLE", `\bpk_test_[A-Za-z0-9]{24,}\b`, "stripe", "pk_test_", 0},
+
+		// Postmark
+		{"POSTMARK_SERVER_TOKEN", `(?i)(?:POSTMARK_SERVER_TOKEN|POSTMARK_API_TOKEN)\s*[=:]\s*['"]?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})['"]?`, "postmark", "postmark", 1},
+
+		// Brevo (Sendinblue)
+		{"BREVO_API_KEY", `\bxkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}\b`, "brevo", "xkeysib-", 0},
+
+		// Resend
+		{"RESEND_API_KEY", `\bre_[A-Za-z0-9]{30,}\b`, "resend", "re_", 0},
+
+		// Elastic Email
+		{"ELASTIC_EMAIL_KEY", `(?i)(?:ELASTIC_EMAIL_API_KEY|ELASTICEMAIL_API_KEY)\s*[=:]\s*['"]?([A-Za-z0-9-]{36,})['"]?`, "elastic_email", "elastic", 1},
+
+		// Database connection strings (contain embedded credentials)
+		{"DATABASE_URL_POSTGRES", `postgres(?:ql)?://[^\s<>"']{10,}`, "database", "postgres", 0},
+		{"DATABASE_URL_MYSQL", `mysql://[^\s<>"']{10,}`, "database", "mysql://", 0},
+		{"DATABASE_URL_MONGODB", `mongodb(?:\+srv)?://[^\s<>"']{10,}`, "database", "mongodb", 0},
+		{"DATABASE_URL_REDIS", `redis(?:s)?://[^\s<>"']{10,}`, "database", "redis://", 0},
+		{"DATABASE_URL_AMQP", `amqps?://[^\s<>"']{10,}`, "database", "amqp", 0},
+
+		// SMTP — extended patterns
+		{"SMTP_URL", `smtps?://[^\s<>"']+`, "smtp", "smtp://", 0},
+		{"SMTP_HOST", `(?i)(?:SMTP|MAIL|EMAIL)_(?:HOST|SERVER)\s*[=:]\s*['"]?([^\s'"]{4,})['"]?`, "smtp", "", 1},
+		{"SMTP_USER", `(?i)(?:SMTP|MAIL|EMAIL)_(?:USER(?:NAME)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PASS", `(?i)(?:SMTP|MAIL|EMAIL)_(?:PASS(?:WORD)?)\s*[=:]\s*['"]?([^\s'"]{3,})['"]?`, "smtp", "", 1},
+		{"SMTP_PORT", `(?i)(?:SMTP|MAIL|EMAIL)_PORT\s*[=:]\s*['"]?(\d{2,5})['"]?`, "smtp", "", 1},
+		{"MAILER_DSN", `(?i)MAILER_(?:DSN|URL)\s*[=:]\s*['"]?((?:smtp|sendmail|ses\+smtp)s?://[^\s'"]+)['"]?`, "smtp", "mailer_", 1},
 
 		// Generic secret (catch-all for SECRET=xxx, TOKEN=xxx, PASSWORD=xxx, API_KEY=xxx)
 		{"GENERIC_SECRET", `(?i)(?:SECRET|TOKEN|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|AUTH_TOKEN)\s*[=:]\s*['"]?([^\s'"]{8,})['"]?`, "", "", 1},
@@ -254,7 +274,14 @@ var servicePrefixes = []struct {
 	{"pscale_tkn_", "planetscale"}, {"pscale_pw_", "planetscale"},
 	{"sq0atp-", "square"}, {"sq0csp-", "square"},
 	{"base64:", "laravel"},
+	{"pk_live_", "stripe"}, {"pk_test_", "stripe"},
+	{"xkeysib-", "brevo"},
+	{"re_", "resend"},
 	{"smtp://", "smtp"}, {"smtps://", "smtp"},
+	{"postgres://", "database"}, {"postgresql://", "database"},
+	{"mysql://", "database"}, {"mongodb://", "database"}, {"mongodb+srv://", "database"},
+	{"redis://", "database"}, {"rediss://", "database"},
+	{"amqp://", "database"}, {"amqps://", "database"},
 	{"dp.pt.", "doppler"}, {"dp.sa.", "doppler"}, {"dp.ct.", "doppler"},
 	{"lin_api_", "linear"},
 	{"ntn_", "notion"},
@@ -585,11 +612,15 @@ func detectServiceFromKey(key string) string {
 		{[]string{"STRIPE"}, "stripe"},
 		{[]string{"SENDGRID", "SG_"}, "sendgrid"},
 		{[]string{"MAILGUN", "MG_"}, "mailgun"},
+		{[]string{"POSTMARK"}, "postmark"},
+		{[]string{"BREVO", "SENDINBLUE"}, "brevo"},
+		{[]string{"RESEND"}, "resend"},
+		{[]string{"ELASTIC_EMAIL"}, "elastic_email"},
+		{[]string{"DATABASE_URL", "DB_URL", "DB_CONNECTION", "POSTGRES", "MYSQL_", "MONGO", "REDIS_URL"}, "database"},
 		{[]string{"TWILIO"}, "twilio"},
 		{[]string{"GITHUB"}, "github"},
 		{[]string{"GITLAB"}, "gitlab"},
 		{[]string{"SLACK"}, "slack"},
-		{[]string{"DISCORD"}, "discord"},
 		{[]string{"TELEGRAM"}, "telegram"},
 		{[]string{"SMTP_", "MAIL_"}, "smtp"},
 		{[]string{"FIREBASE"}, "firebase"},

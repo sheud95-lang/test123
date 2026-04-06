@@ -24,7 +24,7 @@ func (s *PathScanner) Scan(client *fasthttp.Client, host string, port int, path 
 		h = core.GenerateHeaders(host)
 	}
 	resp := utils.Fetch(client, url, "GET", h, 2, 150_000_000)
-	if resp == nil || resp.Status == 404 || resp.Status == 403 || resp.Status == 503 || resp.Status == 502 {
+	if resp == nil || resp.Status == 404 || resp.Status == 502 {
 		return nil
 	}
 	secrets := extractors.ExtractSecrets(resp.Body, url)

@@ -179,9 +179,13 @@ func (v *Validator) processTask(task validationTask) {
 		case s.Service == "digitalocean" && strings.HasPrefix(s.Value, "dop_v1_"):
 			valid, detail = v.validateBearer("https://api.digitalocean.com/v2/account", s.Value, "Bearer")
 
-		// === Discord ===
-		case s.Service == "discord" && s.Type == "DISCORD_BOT_TOKEN":
-			valid, detail = v.validateBearer("https://discord.com/api/v10/users/@me", s.Value, "Bot")
+		// === Postmark ===
+		case s.Service == "postmark":
+			valid, detail = v.validatePostmark(s.Value)
+
+		// === Brevo (Sendinblue) ===
+		case s.Service == "brevo" && strings.HasPrefix(s.Value, "xkeysib-"):
+			valid, detail = v.validateBrevo(s.Value)
 
 		// === Twilio ===
 		case s.Type == "TWILIO_ACCOUNT_SID":
@@ -364,6 +368,54 @@ func (v *Validator) validateHeroku(token string) (bool, string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.heroku+json; version=3")
 	req.Header.Set("User-Agent", "Reaper-Validator/1.0")
+
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode == 200 {
+		var data map[string]interface{}
+		if json.Unmarshal(body, &data) == nil {
+			if email, ok := data["email"]; ok {
+				return true, fmt.Sprintf("email: %v", email)
+			}
+		}
+		return true, "HTTP 200"
+	}
+	return false, ""
+}
+
+func (v *Validator) validatePostmark(token string) (bool, string) {
+	req, _ := http.NewRequest("GET", "https://api.postmarkapp.com/server", nil)
+	req.Header.Set("X-Postmark-Server-Token", token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := v.client.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode == 200 {
+		var data map[string]interface{}
+		if json.Unmarshal(body, &data) == nil {
+			if name, ok := data["Name"]; ok {
+				return true, fmt.Sprintf("server: %v", name)
+			}
+		}
+		return true, "HTTP 200"
+	}
+	return false, ""
+}
+
+func (v *Validator) validateBrevo(apiKey string) (bool, string) {
+	req, _ := http.NewRequest("GET", "https://api.brevo.com/v3/account", nil)
+	req.Header.Set("api-key", apiKey)
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := v.client.Do(req)
 	if err != nil {
