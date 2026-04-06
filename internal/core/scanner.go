@@ -391,27 +391,22 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 		}()
 	}
 
-	// Feed targets in batches, log progress between batches
-	batchSize := 100
-	batchStart := 0
+	// Build existing target map ONCE (avoid O(n) rebuild per batch)
+	existing := make(map[string]bool, len(targets))
+	for _, et := range targets {
+		existing[fmt.Sprintf("%s:%d", et.Host, et.Port)] = true
+	}
+
+	// Feed targets, update status via console title, chain every 500
+	lastStatus := time.Now()
 	for i, t := range targets {
 		if se.isStopped() {
 			break
 		}
 		taskCh <- scanTask{target: t, paths: paths, tg: tg}
 
-		// Log progress every batchSize targets submitted
-		if (i+1)%batchSize == 0 || i == len(targets)-1 {
-			// Wait for current batch to mostly drain by checking count
-			end := i + 1
-			for {
-				pending := end - batchStart - int(atomic.LoadInt64(&se.count)-int64(batchStart))
-				if pending < numWorkers || se.isStopped() {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-
+		// Update console title every 2 seconds (cross-platform, no spam)
+		if time.Since(lastStatus) > 2*time.Second || i == len(targets)-1 {
 			elapsed := time.Since(se.start).Seconds()
 			c := atomic.LoadInt64(&se.count)
 			rps := float64(0)
@@ -422,33 +417,27 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 			validStr := ""
 			if se.Validator != nil {
 				vOK, vFail, vPend := se.Validator.Stats()
-				validStr = fmt.Sprintf(" | Valid: %d | Invalid: %d | Pending: %d", vOK, vFail, vPend)
+				validStr = fmt.Sprintf(" | V:%d I:%d P:%d", vOK, vFail, vPend)
 			}
-			// Sticky status bar: overwrite same line using \r + ANSI clear
-			fmt.Fprintf(os.Stderr, "\r\033[2K[%s] %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d | New: %d%s",
-				time.Now().Format("15:04:05"),
-				end, len(targets), c, rps,
-				stats["hits_with_secrets"], stats["total_secrets"], stats["total_new_targets"], validStr)
-			batchStart = end
+			// Console window title — visible in taskbar, works on Windows+Linux+Mac
+			fmt.Fprintf(os.Stderr, "\033]0;Reaper | %d/%d | %d reqs | %.0f RPS | Hits: %d | Secrets: %d%s\007",
+				i+1, len(targets), c, rps,
+				stats["hits_with_secrets"], stats["total_secrets"], validStr)
+			lastStatus = time.Now()
+		}
 
-			// Chain new targets between batches
-			if tg != nil {
-				existing := make(map[string]bool)
-				for _, et := range targets {
-					existing[fmt.Sprintf("%s:%d", et.Host, et.Port)] = true
-				}
-				chainCount := 0
-				for _, nt := range tg.GetTargets() {
-					if nt.Priority > 0 && !existing[fmt.Sprintf("%s:%d", nt.Host, nt.Port)] {
-						taskCh <- scanTask{target: nt, paths: paths, tg: tg}
-						chainCount++
-						if chainCount >= 100 {
-							break
-						}
+		// Chain new targets every 500 submitted
+		if tg != nil && ((i+1)%500 == 0 || i == len(targets)-1) {
+			chainCount := 0
+			for _, nt := range tg.GetTargets() {
+				key := fmt.Sprintf("%s:%d", nt.Host, nt.Port)
+				if nt.Priority > 0 && !existing[key] {
+					existing[key] = true
+					taskCh <- scanTask{target: nt, paths: paths, tg: tg}
+					chainCount++
+					if chainCount >= 100 {
+						break
 					}
-				}
-				if chainCount > 0 {
-					log.Printf("Chaining: %d new targets", chainCount)
 				}
 			}
 		}
@@ -468,7 +457,7 @@ func (se *ScannerEngine) Run(targets []*Target, paths []string, tg *TargetGenera
 	for name, cnt := range se.scanCounts {
 		scanStats = append(scanStats, fmt.Sprintf("%s=%d", name, atomic.LoadInt64(cnt)))
 	}
-	// Clear sticky status bar and print final stats
-	fmt.Fprintf(os.Stderr, "\r\033[2K")
+	// Clear console title and print final stats
+	fmt.Fprintf(os.Stderr, "\033]0;\007")
 	log.Printf("Done: %d reqs in %.1fs (%.0f RPS) | Scanner calls: %s", c, elapsed, rps, strings.Join(scanStats, ", "))
 }

@@ -82,7 +82,7 @@ type TreasureWriter struct {
 	validByService map[string][]string // aggregated for all_valid.txt
 	validSeen      map[string]map[string]bool // dedup
 	smtpEntries    []*smtpEntry        // accumulated SMTP connection blocks
-	pathHits       map[string]int     // path -> hit count for leaderboard
+	pathHits       map[string]map[string]bool // path -> unique sources for leaderboard
 	stopFlush      chan struct{}
 }
 
@@ -107,7 +107,7 @@ func NewTreasureWriter(outputDir string) *TreasureWriter {
 		validByService: make(map[string][]string),
 		validSeen:      make(map[string]map[string]bool),
 		smtpEntries:    nil,
-		pathHits:       make(map[string]int),
+		pathHits:       make(map[string]map[string]bool),
 		stopFlush:      make(chan struct{}),
 	}
 
@@ -149,6 +149,19 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 
+	// Filter out GENERIC_SECRET with no real service — completely invisible
+	var filtered []extractors.Secret
+	for _, s := range secrets {
+		if s.Type == "GENERIC_SECRET" && (s.Service == "" || s.Service == "generic") {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	secrets = filtered
+	if len(secrets) == 0 {
+		return
+	}
+
 	// Filter already-seen secrets (dedup by type:value, not by URL)
 	var newSecrets []extractors.Secret
 	for _, s := range secrets {
@@ -163,13 +176,17 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 	}
 	secrets = newSecrets
 
-	// Track path hits for leaderboard
+	// Track path hits for leaderboard (unique sources per path)
 	if u, err := url.Parse(sourceURL); err == nil {
 		p := u.Path
 		if p == "" {
 			p = "/"
 		}
-		tw.pathHits[p] += len(secrets)
+		host := u.Host
+		if tw.pathHits[p] == nil {
+			tw.pathHits[p] = make(map[string]bool)
+		}
+		tw.pathHits[p][host] = true
 	}
 
 	ts := time.Now().UTC().Format("15:04:05")
@@ -181,12 +198,11 @@ func (tw *TreasureWriter) WriteFinding(sourceURL, scanType string, secrets []ext
 		line := fmt.Sprintf("[%s] %s — %s: %s%s\n", ts, sourceURL, s.Type, s.Value, tag)
 		tw.hitsFile.WriteString(line)
 
-		// Real-time hit notification — print above sticky status bar
+		// Real-time hit notification
 		val := s.Value
 		if len(val) > 40 {
 			val = val[:37] + "..."
 		}
-		fmt.Fprintf(os.Stderr, "\r\033[2K")
 		log.Printf("[HIT] %s — %s: %s%s", sourceURL, s.Type, val, tag)
 	}
 
@@ -404,21 +420,21 @@ func (tw *TreasureWriter) Close() {
 		}
 	}
 
-	// Write path leaderboard
+	// Write path leaderboard (unique sources per path)
 	if len(tw.pathHits) > 0 {
 		type pathStat struct {
 			path  string
 			count int
 		}
 		var sorted []pathStat
-		for p, c := range tw.pathHits {
-			sorted = append(sorted, pathStat{p, c})
+		for p, sources := range tw.pathHits {
+			sorted = append(sorted, pathStat{p, len(sources)})
 		}
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].count > sorted[j].count })
 		lbPath := filepath.Join(tw.treasureDir, "path_leaderboard.txt")
 		if f, err := os.Create(lbPath); err == nil {
 			w := bufio.NewWriter(f)
-			w.WriteString("Path Leaderboard — Top paths by secret hits\n")
+			w.WriteString("Path Leaderboard — Top paths by unique sources\n")
 			w.WriteString(strings.Repeat("=", 50) + "\n\n")
 			limit := len(sorted)
 			if limit > 100 {

@@ -76,7 +76,7 @@ func readIntDefault(prompt string, def int) int {
 	return def
 }
 
-func interactiveMenu() *config.ScanConfig {
+func interactiveMenu() (*config.ScanConfig, string) {
 	fmt.Println(`
     ____
    / __ \___  ____ _____  ___  _____
@@ -86,13 +86,6 @@ func interactiveMenu() *config.ScanConfig {
                 /_/
     Zero-Target Secret Scanner`)
 	fmt.Println()
-	fmt.Println("  [1] Quick Scan    (50k targets, all scanners)")
-	fmt.Println("  [2] Deep Scan     (200k targets, recon + validate)")
-	fmt.Println("  [3] Stealth Scan  (10k targets, low RPS, WAF L3)")
-	fmt.Println("  [4] Custom Scan   (configure everything)")
-	fmt.Println()
-
-	choice := readLine("  > ")
 
 	cfg := &config.ScanConfig{
 		MaxTargets:          50000,
@@ -126,86 +119,83 @@ func interactiveMenu() *config.ScanConfig {
 		AutosaveInterval:    30 * time.Second,
 	}
 
-	switch choice {
-	case "1": // Quick Scan — defaults are fine
-	case "2": // Deep Scan
-		cfg.MaxTargets = 200000
-		cfg.Validate = true
+	// Auto-detect paths.txt in current directory
+	pathsFile := ""
+	if _, err := os.Stat("paths.txt"); err == nil {
+		fmt.Println("  [*] Found paths.txt in current directory")
+		pathsFile = "paths.txt"
+	}
+
+	// Paths file prompt
+	pathsIn := readLine(fmt.Sprintf("  Paths file [%s]: ", pathsFile))
+	if pathsIn != "" {
+		pathsFile = pathsIn
+	}
+
+	cfg.MaxTargets = readIntDefault("  Max targets", 50000)
+	cfg.TargetRPS = readIntDefault("  RPS", 4000)
+	cfg.MaxConcurrentReqs = readIntDefault("  Concurrency", 800)
+
+	portsIn := readLine("  Ports [80,443,8080,8443]: ")
+	if portsIn != "" {
+		cfg.Ports = parsePorts(portsIn)
+	}
+
+	modeIn := readLine("  Mode (L4, L7, L4+L7) [L4+L7]: ")
+	if modeIn != "" {
+		cfg.ScanMode = modeIn
+	}
+
+	scannersIn := readLine("  Scanners [path,js,r2s,nvca,ajs,uafr,git]: ")
+	if scannersIn != "" {
+		list := strings.Split(scannersIn, ",")
+		for i := range list {
+			list[i] = strings.TrimSpace(list[i])
+		}
+		cfg.EnabledScanners = list
+	}
+
+	cfg.WAFLevel = readIntDefault("  WAF level (0=off, 1-5)", 1)
+	cfg.WAFEvasion = cfg.WAFLevel > 0
+
+	validateIn := readLine("  Validate secrets? (y/N): ")
+	cfg.Validate = strings.ToLower(validateIn) == "y"
+
+	reconIn := readLine("  Enable recon? (y/N): ")
+	if strings.ToLower(reconIn) == "y" {
 		cfg.Recon = true
 		cfg.ReconReverseIP = true
 		cfg.ReconSubdomains = true
 		cfg.ReconTLDSweep = true
 		cfg.ReconDeepChain = true
-	case "3": // Stealth Scan
-		cfg.MaxTargets = 10000
-		cfg.TargetRPS = 500
-		cfg.MaxConcurrentReqs = 100
-		cfg.WAFLevel = 3
-		cfg.DelayJitterMinMs = 50
-		cfg.DelayJitterMaxMs = 200
-	case "4": // Custom
-		cfg.MaxTargets = readIntDefault("  Max targets", 50000)
-		cfg.TargetRPS = readIntDefault("  RPS", 4000)
-		cfg.MaxConcurrentReqs = readIntDefault("  Concurrency", 800)
-
-		portsIn := readLine("  Ports [80,443,8080,8443]: ")
-		if portsIn != "" {
-			cfg.Ports = parsePorts(portsIn)
-		}
-
-		modeIn := readLine("  Mode (L4, L7, L4+L7) [L4+L7]: ")
-		if modeIn != "" {
-			cfg.ScanMode = modeIn
-		}
-
-		scannersIn := readLine("  Scanners [path,js,r2s,nvca,ajs,uafr,git]: ")
-		if scannersIn != "" {
-			list := strings.Split(scannersIn, ",")
-			for i := range list {
-				list[i] = strings.TrimSpace(list[i])
-			}
-			cfg.EnabledScanners = list
-		}
-
-		cfg.WAFLevel = readIntDefault("  WAF level (0=off, 1-5)", 1)
-		cfg.WAFEvasion = cfg.WAFLevel > 0
-
-		validateIn := readLine("  Validate secrets? (y/N): ")
-		cfg.Validate = strings.ToLower(validateIn) == "y"
-
-		reconIn := readLine("  Enable recon? (y/N): ")
-		if strings.ToLower(reconIn) == "y" {
-			cfg.Recon = true
-			cfg.ReconReverseIP = true
-			cfg.ReconSubdomains = true
-			cfg.ReconTLDSweep = true
-			cfg.ReconDeepChain = true
-		}
-
-		outIn := readLine("  Output dir [results]: ")
-		if outIn != "" {
-			cfg.OutputDir = outIn
-		}
-	default:
-		fmt.Println("  Invalid choice, using Quick Scan defaults.")
 	}
 
-	return cfg
+	outIn := readLine("  Output dir [results]: ")
+	if outIn != "" {
+		cfg.OutputDir = outIn
+	}
+
+	return cfg, pathsFile
 }
 
 func main() {
-	// Interactive mode: no args → show menu
+	// Interactive mode: no args → configure and run
 	if len(os.Args) == 1 {
-		cfg := interactiveMenu()
+		cfg, pathsFile := interactiveMenu()
 		fmt.Println()
 
 		os.MkdirAll(cfg.OutputDir, 0o755)
 		log.SetOutput(os.Stdout)
 
-		banner(cfg, 0)
+		var wlFiles []string
+		if pathsFile != "" {
+			wlFiles = []string{pathsFile}
+		}
+
+		banner(cfg, len(wlFiles))
 
 		eng := engine.NewReaperEngine(cfg)
-		if err := eng.Run(nil, false); err != nil {
+		if err := eng.Run(wlFiles, false); err != nil {
 			log.Fatalf("Error: %v", err)
 		}
 		return
