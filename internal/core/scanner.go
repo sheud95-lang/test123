@@ -23,6 +23,11 @@ type Scanner interface {
 	Scan(client *fasthttp.Client, host string, port int, path string, isIP bool, scheme string) *ScanResult
 }
 
+// SecretValidator validates found secrets against APIs. Implemented by validators.Validator.
+type SecretValidator interface {
+	ValidateSecrets(sourceURL string, secrets []extractors.Secret)
+}
+
 // ---- Lock-free rate limiter (atomic CAS) ----
 
 type atomicFloat64 struct {
@@ -114,12 +119,13 @@ type scannerEntry struct {
 }
 
 type ScannerEngine struct {
-	Config   *config.ScanConfig
-	Results  *ResultStore
-	Treasure *TreasureWriter
-	rl       *RateLimiter
-	scanners []scannerEntry // ordered slice for deterministic iteration
-	client   *fasthttp.Client
+	Config    *config.ScanConfig
+	Results   *ResultStore
+	Treasure  *TreasureWriter
+	Validator SecretValidator // optional: validates found secrets against APIs
+	rl        *RateLimiter
+	scanners  []scannerEntry // ordered slice for deterministic iteration
+	client    *fasthttp.Client
 	count       int64
 	scanCounts  map[string]*int64 // per-scanner call counter
 	start       time.Time
@@ -281,6 +287,10 @@ func (se *ScannerEngine) ScanTarget(target *Target, paths []string, tg *TargetGe
 						envSecrets := extractors.ExtractEnvPairs(collectRawLines(result.Secrets), result.URL)
 						if len(envSecrets) > 0 {
 							se.Treasure.WriteEnvDump(result.URL, result.Scanner, envSecrets)
+						}
+						// Validate secrets against APIs if enabled
+						if se.Validator != nil {
+							se.Validator.ValidateSecrets(result.URL, result.Secrets)
 						}
 					}
 					if se.Config.Verbose {

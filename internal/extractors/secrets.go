@@ -337,6 +337,35 @@ func isPrivateKeySingleLine(lines []string, lineNo int) bool {
 	return true // single-line marker, likely docs
 }
 
+// isCodeLikeValue detects minified JS/code fragments that GENERIC_SECRET catches
+// e.g., "e.token,providedIn:", "e,factory:e.\u0275fac})", "!0,image:!0}"
+func isCodeLikeValue(value string) bool {
+	// Reject values containing code syntax characters
+	if strings.ContainsAny(value, "(){};<>|&") {
+		return true
+	}
+	// Arrow functions, commas (object literals), colons mid-value (JS objects)
+	if strings.Contains(value, "=>") || strings.Contains(value, ",") {
+		return true
+	}
+	// Starts with code-like chars
+	if len(value) > 0 && (value[0] == '!' || value[0] == '=' || value[0] == '~' || value[0] == '?') {
+		return true
+	}
+	// JS method chains: contains . followed by word chars (e.token, e.password)
+	if strings.Contains(value, ".") {
+		for i := 0; i < len(value)-1; i++ {
+			if value[i] == '.' && ((value[i+1] >= 'a' && value[i+1] <= 'z') || (value[i+1] >= 'A' && value[i+1] <= 'Z')) {
+				// Allow domain-like patterns (smtp.gmail.com) but reject code (e.token)
+				if i > 0 && value[i-1] >= 'a' && value[i-1] <= 'z' && (i < 3 || value[i-2] < '0') {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func isFalsePositive(value string) bool {
 	if len(value) < 6 {
 		return true
@@ -403,6 +432,11 @@ func ExtractSecrets(text, sourceURL string) []Secret {
 					value = line[loc[0]:loc[1]]
 				}
 				if value == "" || isFalsePositive(value) {
+					continue
+				}
+
+				// GENERIC_SECRET: filter out code-like values (minified JS etc)
+				if sp.Name == "GENERIC_SECRET" && isCodeLikeValue(value) {
 					continue
 				}
 

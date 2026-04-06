@@ -70,6 +70,7 @@ func main() {
 		readTimeout     float64
 		outputDir       string
 		quiet           bool
+		validate        bool
 	)
 
 	flag.StringVar(&wordlists, "w", "", "Comma-separated wordlist files")
@@ -89,6 +90,7 @@ func main() {
 	flag.Float64Var(&readTimeout, "read-timeout", 8.0, "Read timeout")
 	flag.StringVar(&outputDir, "o", "results", "Output dir")
 	flag.BoolVar(&quiet, "q", false, "Quiet")
+	flag.BoolVar(&validate, "validate", false, "Validate found secrets against APIs")
 	flag.Parse()
 
 	scannersList := strings.Split(scannersStr, ",")
@@ -124,6 +126,7 @@ func main() {
 		OutputDir:           outputDir,
 		Verbose:             !quiet,
 		ExcludePrivate:      true,
+		Validate:            validate,
 		AutosaveInterval:    30 * time.Second,
 	}
 

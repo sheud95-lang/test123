@@ -13,6 +13,7 @@ import (
 	"reaper/internal/config"
 	"reaper/internal/core"
 	"reaper/internal/scanners"
+	"reaper/internal/validators"
 )
 
 type ReaperEngine struct {
@@ -49,6 +50,15 @@ func NewReaperEngine(cfg *config.ScanConfig) *ReaperEngine {
 			se.RegisterScanner(s)
 		}
 	}
+
+	// Validation pipeline (optional)
+	if cfg.Validate {
+		v := validators.NewValidator(tw)
+		se.Validator = v
+		go v.Run()
+		log.Printf("Secret validation: ENABLED")
+	}
+
 	return &ReaperEngine{
 		Config: cfg, PL: core.NewPathLoader(), RS: rs,
 		IPGen: core.NewIPGenerator(cfg), TG: tg, SE: se,
@@ -154,6 +164,10 @@ func (e *ReaperEngine) Run(wlFiles []string, noDefault bool) error {
 }
 
 func (e *ReaperEngine) save() {
+	// Stop validator first so it finishes pending validations before treasure closes
+	if v, ok := e.SE.Validator.(*validators.Validator); ok && v != nil {
+		v.Stop()
+	}
 	e.RS.SaveNow()
 	e.Treasure.Close()
 	e.Dedup.Save()
